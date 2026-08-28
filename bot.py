@@ -2,55 +2,33 @@ import time
 from datetime import datetime
 
 import requests
-from bs4 import BeautifulSoup
 
-MACKOLIK_URL = "https://www.mackolik.com/iddaa"
-
-
-def get_page(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=30
-    )
-
-    response.raise_for_status()
-    return response.text
+TEST_URL = "https://example.com"
 
 
-def test_mackolik():
+def test_connection():
     print("GOL SINYAL BOTU BASLADI")
     print("Tarih:", datetime.now())
 
     try:
-        html = get_page(MACKOLIK_URL)
-
-        soup = BeautifulSoup(
-            html,
-            "html.parser"
+        response = requests.get(
+            TEST_URL,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15
         )
 
-        title = (
-            soup.title.get_text(" ", strip=True)
-            if soup.title
-            else "Bilinmiyor"
-        )
+        response.raise_for_status()
 
-        print("Mackolik baglantisi BASARILI")
-        print("Sayfa basligi:", title)
-        print("Alinan veri:", len(html), "karakter")
+        print("Internet baglantisi BASARILI")
+        print("HTTP durum kodu:", response.status_code)
 
     except Exception as e:
-        print("Mackolik hatasi:")
+        print("Baglanti hatasi:")
         print(type(e).__name__, str(e))
 
 
 if __name__ == "__main__":
-    test_mackolik()
+    test_connection()
 
     while True:
         time.sleep(3600)
