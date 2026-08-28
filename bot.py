@@ -17,9 +17,20 @@ def get_soup(url):
     return BeautifulSoup(r.text, "html.parser")
 
 
-def get_live_matches():
+def to_number(text):
+    try:
+        return float(
+            text.replace(",", ".")
+            .replace("%", "")
+            .strip()
+        )
+    except:
+        return 0.0
+
+
+def get_match_links():
     soup = get_soup(BASE_URL)
-    matches = []
+    links = []
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -34,37 +45,19 @@ def get_live_matches():
         if href.startswith("/"):
             href = BASE_URL.rstrip("/") + href
 
-        parent_text = a.parent.get_text(" ", strip=True) if a.parent else ""
-
-        if href not in [x["url"] for x in matches]:
-            matches.append({
+        if href not in [x["url"] for x in links]:
+            links.append({
                 "url": href,
-                "score": text,
-                "raw": parent_text
+                "score": text
             })
 
-    return matches
-
-
-def number(text):
-    try:
-        return float(text.replace(",", ".").replace("%", "").strip())
-    except:
-        return 0.0
-
-
-def pair(text):
-    m = re.fullmatch(r"([\d.,]+)\s*-\s*([\d.,]+)", text.strip())
-
-    if not m:
-        return None
-
-    return number(m.group(1)), number(m.group(2))
+    return links
 
 
 def get_stats(match_url):
-    url = match_url.rstrip("/") + "/?t=istatistik"
-    soup = get_soup(url)
+    stats_url = match_url.rstrip("/") + "/?t=istatistik"
+
+    soup = get_soup(stats_url)
 
     lines = [
         x.strip()
@@ -73,7 +66,11 @@ def get_stats(match_url):
     ]
 
     title = soup.find("h3")
-    match_name = title.get_text(" ", strip=True) if title else "Bilinmeyen maç"
+
+    if title:
+        match_name = title.get_text(" ", strip=True)
+    else:
+        match_name = "Bilinmeyen mac"
 
     wanted = {
         "Gol beklentisi (xG)": "xg",
@@ -84,11 +81,11 @@ def get_stats(match_url):
     }
 
     stats = {
-        "xg": (0, 0),
-        "shots": (0, 0),
-        "sot": (0, 0),
-        "big": (0, 0),
-        "corners": (0, 0),
+        "xg": (0.0, 0.0),
+        "shots": (0.0, 0.0),
+        "sot": (0.0, 0.0),
+        "big": (0.0, 0.0),
+        "corners": (0.0, 0.0),
     }
 
     for i, line in enumerate(lines):
@@ -96,92 +93,82 @@ def get_stats(match_url):
         if line not in wanted:
             continue
 
-        key = wanted[line]
+        if i == 0 or i + 1 >= len(lines):
+            continue
 
-        candidates = []
+        left = to_number(lines[i - 1])
+        right = to_number(lines[i + 1])
 
-        if i > 0:
-            candidates.append(lines[i - 1])
-
-        if i + 1 < len(lines):
-            candidates.append(lines[i + 1])
-
-        if i + 2 < len(lines):
-            candidates.append(lines[i + 2])
-
-        for candidate in candidates:
-            values = pair(candidate)
-
-            if values:
-                stats[key] = values
-                break
+        stats[wanted[line]] = (left, right)
 
     return match_name, stats
 
 
 def calculate_signal(stats):
-    xg = sum(stats["xg"])
-    shots = sum(stats["shots"])
-    sot = sum(stats["sot"])
-    big = sum(stats["big"])
-    corners = sum(stats["corners"])
+
+    total_xg = sum(stats["xg"])
+    total_shots = sum(stats["shots"])
+    total_sot = sum(stats["sot"])
+    total_big = sum(stats["big"])
+    total_corners = sum(stats["corners"])
 
     points = 0
 
     # xG
-    if xg >= 2.0:
+    if total_xg >= 2.0:
         points += 30
-    elif xg >= 1.3:
+    elif total_xg >= 1.3:
         points += 22
-    elif xg >= 0.8:
+    elif total_xg >= 0.8:
         points += 14
-    elif xg >= 0.4:
+    elif total_xg >= 0.4:
         points += 7
 
-    # Toplam şut
-    if shots >= 20:
+    # Sut
+    if total_shots >= 20:
         points += 25
-    elif shots >= 14:
+    elif total_shots >= 14:
         points += 18
-    elif shots >= 9:
+    elif total_shots >= 9:
         points += 10
 
-    # İsabetli şut
-    if sot >= 8:
+    # Isabetli sut
+    if total_sot >= 8:
         points += 25
-    elif sot >= 5:
+    elif total_sot >= 5:
         points += 18
-    elif sot >= 3:
+    elif total_sot >= 3:
         points += 10
 
-    # Büyük şans
-    if big >= 4:
+    # Buyuk sans
+    if total_big >= 4:
         points += 15
-    elif big >= 2:
+    elif total_big >= 2:
         points += 10
-    elif big >= 1:
+    elif total_big >= 1:
         points += 5
 
     # Korner
-    if corners >= 10:
+    if total_corners >= 10:
         points += 10
-    elif corners >= 6:
+    elif total_corners >= 6:
         points += 6
-    elif corners >= 3:
+    elif total_corners >= 3:
         points += 3
 
     return min(points, 100)
 
 
 def run():
+
     print("\n==============================")
     print("GOL SINYAL TARAMASI")
     print("==============================")
 
     try:
-        matches = get_live_matches()
+        matches = get_match_links()
 
-        print("CANLI MAC:", len(matches))
+        print("BULUNAN MAC:", len(matches))
 
         for match in matches:
 
@@ -192,30 +179,35 @@ def run():
                 print("\n------------------------------")
                 print("MAC:", name)
                 print("SKOR:", match["score"])
+
                 print(
                     "xG:",
                     stats["xg"][0],
                     "-",
                     stats["xg"][1]
                 )
+
                 print(
                     "SUT:",
                     stats["shots"][0],
                     "-",
                     stats["shots"][1]
                 )
+
                 print(
                     "ISABETLI:",
                     stats["sot"][0],
                     "-",
                     stats["sot"][1]
                 )
+
                 print(
                     "BUYUK SANS:",
                     stats["big"][0],
                     "-",
                     stats["big"][1]
                 )
+
                 print(
                     "KORNER:",
                     stats["corners"][0],
@@ -226,13 +218,13 @@ def run():
                 print("GOL PUANI:", signal)
 
                 if signal >= 70:
-                    print("🚨🚨 GOL SINYALI - COK GUCLU")
+                    print("GOL SINYALI: COK GUCLU")
 
                 elif signal >= 55:
-                    print("🚨 GOL SINYALI - GUCLU")
+                    print("GOL SINYALI: GUCLU")
 
                 elif signal >= 40:
-                    print("⚠️ GOL IHTIMALI ARTIYOR")
+                    print("GOL IHTIMALI ARTIYOR")
 
                 else:
                     print("BASKI YETERSIZ")
