@@ -5,7 +5,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
-URL = "https://m.flashscore.com.tr/"
+BASE_URL = "https://m.flashscore.com.tr/"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -13,78 +13,87 @@ HEADERS = {
 }
 
 
-def get_lines():
-    response = requests.get(
-        URL,
-        headers=HEADERS,
-        timeout=20
-    )
-    response.raise_for_status()
+def get_soup(url):
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    return BeautifulSoup(r.text, "html.parser")
 
-    soup = BeautifulSoup(response.text, "html.parser")
 
-    return [
+def get_live_match_links():
+    soup = get_soup(BASE_URL)
+    links = []
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+
+        if "/mac/" not in href:
+            continue
+
+        text = a.get_text(" ", strip=True)
+
+        if not re.fullmatch(r"\d+\s*-\s*\d+", text):
+            continue
+
+        if href.startswith("/"):
+            href = BASE_URL.rstrip("/") + href
+
+        if href not in links:
+            links.append(href)
+
+    return links
+
+
+def get_stats(match_url):
+    stats_url = match_url.rstrip("/") + "/?t=istatistik"
+
+    soup = get_soup(stats_url)
+    lines = [
         x.strip()
         for x in soup.get_text("\n", strip=True).splitlines()
         if x.strip()
     ]
 
+    wanted = [
+        "Gol beklentisi (xG)",
+        "Toplam şut",
+        "İsabetli şut",
+        "Büyük şans",
+        "Kornerler",
+        "Rakip ceza sahasında topla buluşma",
+    ]
 
-def is_live_status(text):
-    return (
-        re.fullmatch(r"\d{1,3}'", text)
-        or re.fullmatch(r"\d{1,3}\+'", text)
-        or text in ["Devre Arası", "Devre"]
-    )
-
-
-def find_live_matches(lines):
-    matches = []
+    found = {}
 
     for i, line in enumerate(lines):
+        if line in wanted and i > 0 and i + 1 < len(lines):
+            left = lines[i - 1]
+            right = lines[i + 1]
 
-        if not is_live_status(line):
-            continue
+            found[line] = (left, right)
 
-        status = line
-        teams = None
-        score = None
+    title = soup.find("h3")
+    match_name = title.get_text(" ", strip=True) if title else match_url
 
-        for x in lines[i + 1:i + 6]:
-
-            if teams is None and " - " in x:
-                teams = x
-                continue
-
-            if teams and re.fullmatch(r"\d+\s*-\s*\d+", x):
-                score = x
-                break
-
-        if teams and score:
-            matches.append({
-                "status": status,
-                "teams": teams,
-                "score": score
-            })
-
-    return matches
+    return match_name, found
 
 
 def run():
-    print("GOL SINYAL BOTU BASLADI")
+    print("CANLI ISTATISTIK TESTI BASLADI")
     print("Tarih:", datetime.now())
 
     try:
-        lines = get_lines()
-        matches = find_live_matches(lines)
+        links = get_live_match_links()
 
-        print("CANLI MAC SAYISI:", len(matches))
+        print("BULUNAN MAC LINKI:", len(links))
 
-        for match in matches:
+        for url in links[:3]:
+            match_name, stats = get_stats(url)
+
             print("--------------------")
-            print("DAKIKA:", match["status"])
-            print("MAC:", match["teams"])
-            print("SKOR:", match["score"])
+            print("MAC:", match_name)
+
+            for name, values in stats.items():
+                print(name + ":", values[0], "-", values[1])
 
     except Exception as e:
         print("HATA:", type(e).__name__, str(e))
@@ -94,4 +103,4 @@ if __name__ == "__main__":
     run()
 
     while True:
-        time.sleep(60)
+        time.sleep(3600)
