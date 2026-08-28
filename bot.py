@@ -1,5 +1,7 @@
+import re
 import time
 from datetime import datetime
+
 import requests
 
 FLASHSCORE_URL = "https://www.flashscore.com.tr/"
@@ -14,31 +16,54 @@ HEADERS = {
 }
 
 
-def flashscore_kontrol():
+def get_flashscore():
+    response = requests.get(
+        FLASHSCORE_URL,
+        headers=HEADERS,
+        timeout=20
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def find_matches(html):
+    matches = []
+
+    pattern = r'"homeParticipantName":"([^"]+)".*?"awayParticipantName":"([^"]+)"'
+
+    for home, away in re.findall(pattern, html):
+        match = f"{home} - {away}"
+
+        if match not in matches:
+            matches.append(match)
+
+    return matches
+
+
+def run():
     print("GOL SINYAL BOTU BASLADI")
     print("Tarih:", datetime.now())
 
     try:
-        response = requests.get(
-            FLASHSCORE_URL,
-            headers=HEADERS,
-            timeout=20
-        )
+        html = get_flashscore()
 
-        print("HTTP:", response.status_code)
-        print("Veri boyutu:", len(response.text))
+        print("FLASHSCORE BAGLANTISI BASARILI")
+        print("Veri boyutu:", len(html))
 
-        if response.status_code == 200:
-            print("FLASHSCORE BAGLANTISI BASARILI")
-        else:
-            print("FLASHSCORE ERISIM HATASI")
+        matches = find_matches(html)
+
+        print("Bulunan mac sayisi:", len(matches))
+
+        for match in matches[:20]:
+            print("MAC:", match)
 
     except Exception as e:
-        print("HATA:", type(e).__name__, str(e))
+        print("HATA:")
+        print(type(e).__name__, str(e))
 
 
 if __name__ == "__main__":
-    flashscore_kontrol()
+    run()
 
     while True:
-        time.sleep(60)
+        time.sleep(3600)
