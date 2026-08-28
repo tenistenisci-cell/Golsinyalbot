@@ -25,39 +25,72 @@ def to_number(text):
             .strip()
         )
     except:
-        return 0.0
+        return None
 
 
-def get_match_links():
+def get_live_matches():
     soup = get_soup(BASE_URL)
-    links = []
+    matches = []
+    seen = set()
 
     for a in soup.find_all("a", href=True):
+
         href = a["href"]
-        text = a.get_text(" ", strip=True)
+        score = a.get_text(" ", strip=True)
 
         if "/mac/" not in href:
             continue
 
-        if not re.fullmatch(r"\d+\s*-\s*\d+", text):
+        if not re.fullmatch(r"\d+\s*-\s*\d+", score):
             continue
 
         if href.startswith("/"):
             href = BASE_URL.rstrip("/") + href
 
-        if href not in [x["url"] for x in links]:
-            links.append({
-                "url": href,
-                "score": text
-            })
+        if href in seen:
+            continue
 
-    return links
+        parent_text = ""
+        node = a
+
+        for _ in range(4):
+            if node is None:
+                break
+
+            text = node.get_text(" ", strip=True)
+
+            if re.search(
+                r"(Devre Arası|\d{1,3}\+?')",
+                text
+            ):
+                parent_text = text
+                break
+
+            node = node.parent
+
+        status_match = re.search(
+            r"(Devre Arası|\d{1,3}\+?')",
+            parent_text
+        )
+
+        if not status_match:
+            continue
+
+        seen.add(href)
+
+        matches.append({
+            "url": href,
+            "score": score,
+            "minute": status_match.group(1)
+        })
+
+    return matches
 
 
 def get_stats(match_url):
-    stats_url = match_url.rstrip("/") + "/?t=istatistik"
 
-    soup = get_soup(stats_url)
+    url = match_url.rstrip("/") + "/?t=istatistik"
+    soup = get_soup(url)
 
     lines = [
         x.strip()
@@ -81,11 +114,11 @@ def get_stats(match_url):
     }
 
     stats = {
-        "xg": (0.0, 0.0),
-        "shots": (0.0, 0.0),
-        "sot": (0.0, 0.0),
-        "big": (0.0, 0.0),
-        "corners": (0.0, 0.0),
+        "xg": None,
+        "shots": None,
+        "sot": None,
+        "big": None,
+        "corners": None,
     }
 
     for i, line in enumerate(lines):
@@ -99,141 +132,146 @@ def get_stats(match_url):
         left = to_number(lines[i - 1])
         right = to_number(lines[i + 1])
 
-        stats[wanted[line]] = (left, right)
+        if left is not None and right is not None:
+            stats[wanted[line]] = (left, right)
 
     return match_name, stats
 
 
-def calculate_signal(stats):
+def total(stat):
+    if stat is None:
+        return None
 
-    total_xg = sum(stats["xg"])
-    total_shots = sum(stats["shots"])
-    total_sot = sum(stats["sot"])
-    total_big = sum(stats["big"])
-    total_corners = sum(stats["corners"])
+    return stat[0] + stat[1]
+
+
+def calculate_signal(stats):
 
     points = 0
 
-    # xG
-    if total_xg >= 2.0:
-        points += 30
-    elif total_xg >= 1.3:
-        points += 22
-    elif total_xg >= 0.8:
-        points += 14
-    elif total_xg >= 0.4:
-        points += 7
+    xg = total(stats["xg"])
+    shots = total(stats["shots"])
+    sot = total(stats["sot"])
+    big = total(stats["big"])
+    corners = total(stats["corners"])
 
-    # Sut
-    if total_shots >= 20:
-        points += 25
-    elif total_shots >= 14:
-        points += 18
-    elif total_shots >= 9:
-        points += 10
+    if xg is not None:
+        if xg >= 2.0:
+            points += 30
+        elif xg >= 1.3:
+            points += 22
+        elif xg >= 0.8:
+            points += 14
+        elif xg >= 0.4:
+            points += 7
 
-    # Isabetli sut
-    if total_sot >= 8:
-        points += 25
-    elif total_sot >= 5:
-        points += 18
-    elif total_sot >= 3:
-        points += 10
+    if shots is not None:
+        if shots >= 20:
+            points += 25
+        elif shots >= 14:
+            points += 18
+        elif shots >= 9:
+            points += 10
 
-    # Buyuk sans
-    if total_big >= 4:
-        points += 15
-    elif total_big >= 2:
-        points += 10
-    elif total_big >= 1:
-        points += 5
+    if sot is not None:
+        if sot >= 8:
+            points += 25
+        elif sot >= 5:
+            points += 18
+        elif sot >= 3:
+            points += 10
 
-    # Korner
-    if total_corners >= 10:
-        points += 10
-    elif total_corners >= 6:
-        points += 6
-    elif total_corners >= 3:
-        points += 3
+    if big is not None:
+        if big >= 4:
+            points += 15
+        elif big >= 2:
+            points += 10
+        elif big >= 1:
+            points += 5
+
+    if corners is not None:
+        if corners >= 10:
+            points += 10
+        elif corners >= 6:
+            points += 6
+        elif corners >= 3:
+            points += 3
 
     return min(points, 100)
 
 
+def show(stat):
+    if stat is None:
+        return "VERI YOK"
+
+    return f"{stat[0]:g} - {stat[1]:g}"
+
+
+def signal_text(score):
+
+    if score >= 70:
+        return "COK GUCLU"
+
+    elif score >= 55:
+        return "GUCLU"
+
+    elif score >= 40:
+        return "GOL IHTIMALI ARTIYOR"
+
+    return "BASKI YETERSIZ"
+
+
 def run():
 
-    print("\n==============================")
-    print("GOL SINYAL TARAMASI")
-    print("==============================")
+    print("\n===== GOL SINYAL TARAMASI =====", flush=True)
 
     try:
-        matches = get_match_links()
+        matches = get_live_matches()
 
-        print("BULUNAN MAC:", len(matches))
+        print(
+            "CANLI MAC SAYISI:",
+            len(matches),
+            flush=True
+        )
 
         for match in matches:
 
             try:
                 name, stats = get_stats(match["url"])
-                signal = calculate_signal(stats)
+                score = calculate_signal(stats)
 
-                print("\n------------------------------")
-                print("MAC:", name)
-                print("SKOR:", match["score"])
-
-                print(
-                    "xG:",
-                    stats["xg"][0],
-                    "-",
-                    stats["xg"][1]
+                block = (
+                    "\n==============================\n"
+                    f"MAC: {name}\n"
+                    f"DAKIKA: {match['minute']}\n"
+                    f"SKOR: {match['score']}\n"
+                    f"xG: {show(stats['xg'])}\n"
+                    f"SUT: {show(stats['shots'])}\n"
+                    f"ISABETLI: {show(stats['sot'])}\n"
+                    f"BUYUK SANS: {show(stats['big'])}\n"
+                    f"KORNER: {show(stats['corners'])}\n"
+                    f"GOL PUANI: {score}\n"
+                    f"SINYAL: {signal_text(score)}\n"
+                    "=============================="
                 )
 
-                print(
-                    "SUT:",
-                    stats["shots"][0],
-                    "-",
-                    stats["shots"][1]
-                )
-
-                print(
-                    "ISABETLI:",
-                    stats["sot"][0],
-                    "-",
-                    stats["sot"][1]
-                )
-
-                print(
-                    "BUYUK SANS:",
-                    stats["big"][0],
-                    "-",
-                    stats["big"][1]
-                )
-
-                print(
-                    "KORNER:",
-                    stats["corners"][0],
-                    "-",
-                    stats["corners"][1]
-                )
-
-                print("GOL PUANI:", signal)
-
-                if signal >= 70:
-                    print("GOL SINYALI: COK GUCLU")
-
-                elif signal >= 55:
-                    print("GOL SINYALI: GUCLU")
-
-                elif signal >= 40:
-                    print("GOL IHTIMALI ARTIYOR")
-
-                else:
-                    print("BASKI YETERSIZ")
+                print(block, flush=True)
 
             except Exception as e:
-                print("MAC HATASI:", str(e))
+                print(
+                    "MAC HATASI:",
+                    type(e).__name__,
+                    str(e),
+                    flush=True
+                )
 
     except Exception as e:
-        print("GENEL HATA:", str(e))
+        print(
+            "GENEL HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
 
 
 if __name__ == "__main__":
