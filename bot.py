@@ -3,7 +3,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-BASE_URL = "https://m.flashscore.com.tr/"
+BASE_URL = "https://m.flashscore.com.tr"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -28,15 +28,58 @@ def to_number(text):
         return None
 
 
-def is_live_status(text):
-    return bool(
-        re.fullmatch(r"\d{1,3}(?:\+)?'", text)
-        or text == "Devre Arası"
-    )
+def get_live_urls():
+    soup = get_soup(BASE_URL + "/")
+    found = []
+    seen = set()
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        score = a.get_text(" ", strip=True)
+
+        if "/mac/" not in href:
+            continue
+
+        if not re.fullmatch(r"\d+\s*-\s*\d+", score):
+            continue
+
+        # Bu skor linkinin ait olduğu en küçük maç satırını bul
+        node = a
+        live = False
+
+        for _ in range(5):
+            if node is None:
+                break
+
+            text = node.get_text(" ", strip=True)
+
+            if re.search(r"\b\d{1,3}(?:\+)?'", text):
+                live = True
+                break
+
+            if "Devre Arası" in text:
+                live = True
+                break
+
+            node = node.parent
+
+        if not live:
+            continue
+
+        if href.startswith("/"):
+            url = BASE_URL + href
+        else:
+            url = href
+
+        if url not in seen:
+            seen.add(url)
+            found.append(url)
+
+    return found
 
 
-def get_live_matches():
-    soup = get_soup(BASE_URL)
+def get_match_info(match_url):
+    soup = get_soup(match_url)
 
     lines = [
         x.strip()
@@ -44,91 +87,46 @@ def get_live_matches():
         if x.strip()
     ]
 
-    live_rows = []
+    title = soup.find("h3")
 
-    # Önce doğru dakika + takım + skor bul
-    for i, line in enumerate(lines):
+    if title:
+        name = title.get_text(" ", strip=True)
+    else:
+        name = "Bilinmeyen mac"
 
-        if not is_live_status(line):
-            continue
+    score = "?"
+    minute = "?"
 
-        minute = line
-        teams = None
-        score = None
+    # Maç detay sayfasındaki skor
+    for line in lines:
+        m = re.match(r"^(\d+)\s*-\s*(\d+)", line)
 
-        for x in lines[i + 1:i + 7]:
+        if m:
+            score = f"{m.group(1)}-{m.group(2)}"
+            break
 
-            if teams is None and " - " in x:
-                teams = x
-                continue
+    # Dakikayı doğrudan AYNI maçın detay sayfasından al
+    full_text = " ".join(lines)
 
-            if teams and re.fullmatch(r"\d+\s*-\s*\d+", x):
-                score = x
-                break
+    minute_match = re.search(
+        r"(?:1\.\s*yarı|2\.\s*yarı)\s*-\s*(\d{1,3}(?:\+)?)'",
+        full_text,
+        re.IGNORECASE
+    )
 
-        if teams and score:
-            live_rows.append({
-                "minute": minute,
-                "teams": teams,
-                "score": score,
-                "url": None
-            })
+    if minute_match:
+        minute = minute_match.group(1) + "'"
 
-    # Sonra takım + skor ile doğru maç linkini eşleştir
-    score_links = []
+    elif "Devre Arası" in full_text:
+        minute = "Devre Arası"
 
-    for a in soup.find_all("a", href=True):
-
-        href = a["href"]
-        text = a.get_text(" ", strip=True)
-
-        if "/mac/" not in href:
-            continue
-
-        if not re.fullmatch(r"\d+\s*-\s*\d+", text):
-            continue
-
-        if href.startswith("/"):
-            href = BASE_URL.rstrip("/") + href
-
-        score_links.append((a, href, text))
-
-    for row in live_rows:
-
-        for a, href, score_text in score_links:
-
-            if score_text != row["score"]:
-                continue
-
-            node = a
-
-            for _ in range(7):
-
-                if node is None:
-                    break
-
-                nearby = node.get_text(" ", strip=True)
-
-                if row["teams"] in nearby:
-                    row["url"] = href
-                    break
-
-                node = node.parent
-
-            if row["url"]:
-                break
-
-    # Linki bulunabilenleri kullan
-    return [
-        x for x in live_rows
-        if x["url"] is not None
-    ]
+    return name, minute, score
 
 
 def get_stats(match_url):
+    stats_url = match_url.rstrip("/") + "/?t=istatistik"
 
-    url = match_url.rstrip("/") + "/?t=istatistik"
-    soup = get_soup(url)
+    soup = get_soup(stats_url)
 
     lines = [
         x.strip()
@@ -169,16 +167,14 @@ def get_stats(match_url):
     return stats
 
 
-def total(stat):
-
-    if stat is None:
+def total(value):
+    if value is None:
         return None
 
-    return stat[0] + stat[1]
+    return value[0] + value[1]
 
 
 def calculate_signal(stats):
-
     points = 0
 
     xg = total(stats["xg"])
@@ -233,56 +229,51 @@ def calculate_signal(stats):
 
 
 def show(stat):
-
     if stat is None:
         return "VERI YOK"
 
     return f"{stat[0]:g} - {stat[1]:g}"
 
 
-def signal_text(score):
-
-    if score >= 70:
+def signal_text(points):
+    if points >= 70:
         return "COK GUCLU"
 
-    if score >= 55:
+    if points >= 55:
         return "GUCLU"
 
-    if score >= 40:
+    if points >= 40:
         return "GOL IHTIMALI ARTIYOR"
 
     return "BASKI YETERSIZ"
 
 
 def run():
-
     print(
         "\n===== GOL SINYAL TARAMASI =====",
         flush=True
     )
 
     try:
-
-        matches = get_live_matches()
+        urls = get_live_urls()
 
         print(
             "CANLI MAC SAYISI:",
-            len(matches),
+            len(urls),
             flush=True
         )
 
-        for match in matches:
-
+        for url in urls:
             try:
-
-                stats = get_stats(match["url"])
+                name, minute, score = get_match_info(url)
+                stats = get_stats(url)
                 points = calculate_signal(stats)
 
                 block = (
                     "\n==============================\n"
-                    f"MAC: {match['teams']}\n"
-                    f"DAKIKA: {match['minute']}\n"
-                    f"SKOR: {match['score']}\n"
+                    f"MAC: {name}\n"
+                    f"DAKIKA: {minute}\n"
+                    f"SKOR: {score}\n"
                     f"xG: {show(stats['xg'])}\n"
                     f"SUT: {show(stats['shots'])}\n"
                     f"ISABETLI: {show(stats['sot'])}\n"
@@ -296,7 +287,6 @@ def run():
                 print(block, flush=True)
 
             except Exception as e:
-
                 print(
                     "MAC HATASI:",
                     type(e).__name__,
@@ -305,7 +295,6 @@ def run():
                 )
 
     except Exception as e:
-
         print(
             "GENEL HATA:",
             type(e).__name__,
@@ -315,7 +304,6 @@ def run():
 
 
 if __name__ == "__main__":
-
     while True:
         run()
         time.sleep(60)
