@@ -13,7 +13,7 @@ HEADERS = {
 }
 
 
-def get_text():
+def get_lines():
     response = requests.get(
         URL,
         headers=HEADERS,
@@ -22,22 +22,52 @@ def get_text():
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-    return soup.get_text("\n", strip=True)
+
+    return [
+        x.strip()
+        for x in soup.get_text("\n", strip=True).splitlines()
+        if x.strip()
+    ]
 
 
-def find_live_matches(text):
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    live = []
+def is_live_status(text):
+    return (
+        re.fullmatch(r"\d{1,3}'", text)
+        or re.fullmatch(r"\d{1,3}\+'", text)
+        or text in ["Devre Arası", "Devre"]
+    )
 
-    for line in lines:
-        minute_live = re.match(r"^\d{1,3}'", line)
-        extra_live = re.match(r"^\d{1,3}\+'", line)
-        halftime = line.startswith("Devre Arası")
 
-        if minute_live or extra_live or halftime:
-            live.append(line)
+def find_live_matches(lines):
+    matches = []
 
-    return live
+    for i, line in enumerate(lines):
+
+        if not is_live_status(line):
+            continue
+
+        status = line
+        teams = None
+        score = None
+
+        for x in lines[i + 1:i + 6]:
+
+            if teams is None and " - " in x:
+                teams = x
+                continue
+
+            if teams and re.fullmatch(r"\d+\s*-\s*\d+", x):
+                score = x
+                break
+
+        if teams and score:
+            matches.append({
+                "status": status,
+                "teams": teams,
+                "score": score
+            })
+
+    return matches
 
 
 def run():
@@ -45,16 +75,16 @@ def run():
     print("Tarih:", datetime.now())
 
     try:
-        text = get_text()
-        matches = find_live_matches(text)
+        lines = get_lines()
+        matches = find_live_matches(lines)
 
         print("CANLI MAC SAYISI:", len(matches))
 
-        if not matches:
-            print("SU AN CANLI MAC BULUNAMADI")
-
         for match in matches:
-            print("CANLI:", match)
+            print("--------------------")
+            print("DAKIKA:", match["status"])
+            print("MAC:", match["teams"])
+            print("SKOR:", match["score"])
 
     except Exception as e:
         print("HATA:", type(e).__name__, str(e))
