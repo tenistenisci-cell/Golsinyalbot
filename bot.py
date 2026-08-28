@@ -4,20 +4,24 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://m.flashscore.com.tr"
+LIVE_URL = BASE_URL + "/?s=2"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
 }
 
+session = requests.Session()
+session.headers.update(HEADERS)
+
 
 def get_soup(url):
-    r = requests.get(url, headers=HEADERS, timeout=20)
+    r = session.get(url, timeout=25)
     r.raise_for_status()
     return BeautifulSoup(r.text, "html.parser")
 
 
-def to_number(text):
+def number(text):
     try:
         return float(
             text.replace(",", ".")
@@ -28,13 +32,37 @@ def to_number(text):
         return None
 
 
-def get_live_urls():
-    soup = get_soup(BASE_URL + "/")
-    found = []
+def find_homepage_minute(anchor):
+    node = anchor
+
+    for _ in range(6):
+        if node is None:
+            break
+
+        text = node.get_text(" ", strip=True)
+
+        m = re.search(
+            r"(\d{1,3}(?:\+)?'|Devre Arası)",
+            text
+        )
+
+        if m:
+            return m.group(1)
+
+        node = node.parent
+
+    return None
+
+
+def get_live_matches():
+    soup = get_soup(LIVE_URL)
+
+    matches = []
     seen = set()
 
     for a in soup.find_all("a", href=True):
-        href = a["href"]
+
+        href = a.get("href", "")
         score = a.get_text(" ", strip=True)
 
         if "/mac/" not in href:
@@ -43,43 +71,36 @@ def get_live_urls():
         if not re.fullmatch(r"\d+\s*-\s*\d+", score):
             continue
 
-        # Bu skor linkinin ait olduğu en küçük maç satırını bul
-        node = a
-        live = False
-
-        for _ in range(5):
-            if node is None:
-                break
-
-            text = node.get_text(" ", strip=True)
-
-            if re.search(r"\b\d{1,3}(?:\+)?'", text):
-                live = True
-                break
-
-            if "Devre Arası" in text:
-                live = True
-                break
-
-            node = node.parent
-
-        if not live:
-            continue
-
         if href.startswith("/"):
             url = BASE_URL + href
         else:
             url = href
 
-        if url not in seen:
-            seen.add(url)
-            found.append(url)
+        # Sadece maç kimliğine göre tek kayıt
+        match_id = re.search(r"/mac/([^/]+)", url)
 
-    return found
+        if not match_id:
+            continue
+
+        match_id = match_id.group(1)
+
+        if match_id in seen:
+            continue
+
+        seen.add(match_id)
+
+        matches.append({
+            "id": match_id,
+            "url": url,
+            "homepage_score": score,
+            "homepage_minute": find_homepage_minute(a)
+        })
+
+    return matches
 
 
-def get_match_info(match_url):
-    soup = get_soup(match_url)
+def get_match_info(match):
+    soup = get_soup(match["url"])
 
     lines = [
         x.strip()
@@ -87,38 +108,54 @@ def get_match_info(match_url):
         if x.strip()
     ]
 
-    title = soup.find("h3")
+    # Takım isimleri
+    h3 = soup.find("h3")
 
-    if title:
-        name = title.get_text(" ", strip=True)
+    if h3:
+        name = h3.get_text(" ", strip=True)
     else:
         name = "Bilinmeyen mac"
 
-    score = "?"
-    minute = "?"
+    # Skor
+    score = match["homepage_score"]
 
-    # Maç detay sayfasındaki skor
     for line in lines:
-        m = re.match(r"^(\d+)\s*-\s*(\d+)", line)
+
+        m = re.match(
+            r"^(\d+)\s*-\s*(\d+)(?:\s*\([^)]*\))?$",
+            line
+        )
 
         if m:
             score = f"{m.group(1)}-{m.group(2)}"
             break
 
-    # Dakikayı doğrudan AYNI maçın detay sayfasından al
-    full_text = " ".join(lines)
+    # Dakika
+    minute = None
 
-    minute_match = re.search(
-        r"(?:1\.\s*yarı|2\.\s*yarı)\s*-\s*(\d{1,3}(?:\+)?)'",
-        full_text,
-        re.IGNORECASE
-    )
+    for line in lines:
 
-    if minute_match:
-        minute = minute_match.group(1) + "'"
+        # Örnek: 1. yarı - 25'
+        m = re.search(
+            r"(?:1\.|2\.)\s*yarı\s*-\s*(\d{1,3}(?:\+)?)'",
+            line,
+            re.IGNORECASE
+        )
 
-    elif "Devre Arası" in full_text:
-        minute = "Devre Arası"
+        if m:
+            minute = m.group(1) + "'"
+            break
+
+        if line == "Devre Arası":
+            minute = "Devre Arası"
+            break
+
+    # Detay sayfasında bulunmazsa canlı liste dakikasını kullan
+    if minute is None:
+        minute = match["homepage_minute"]
+
+    if minute is None:
+        minute = "?"
 
     return name, minute, score
 
@@ -155,11 +192,11 @@ def get_stats(match_url):
         if line not in wanted:
             continue
 
-        if i == 0 or i + 1 >= len(lines):
+        if i < 1 or i + 1 >= len(lines):
             continue
 
-        left = to_number(lines[i - 1])
-        right = to_number(lines[i + 1])
+        left = number(lines[i - 1])
+        right = number(lines[i + 1])
 
         if left is not None and right is not None:
             stats[wanted[line]] = (left, right)
@@ -167,7 +204,7 @@ def get_stats(match_url):
     return stats
 
 
-def total(value):
+def stat_total(value):
     if value is None:
         return None
 
@@ -177,12 +214,13 @@ def total(value):
 def calculate_signal(stats):
     points = 0
 
-    xg = total(stats["xg"])
-    shots = total(stats["shots"])
-    sot = total(stats["sot"])
-    big = total(stats["big"])
-    corners = total(stats["corners"])
+    xg = stat_total(stats["xg"])
+    shots = stat_total(stats["shots"])
+    sot = stat_total(stats["sot"])
+    big = stat_total(stats["big"])
+    corners = stat_total(stats["corners"])
 
+    # xG
     if xg is not None:
         if xg >= 2.0:
             points += 30
@@ -193,6 +231,7 @@ def calculate_signal(stats):
         elif xg >= 0.4:
             points += 7
 
+    # Toplam şut
     if shots is not None:
         if shots >= 20:
             points += 25
@@ -201,6 +240,7 @@ def calculate_signal(stats):
         elif shots >= 9:
             points += 10
 
+    # İsabetli şut
     if sot is not None:
         if sot >= 8:
             points += 25
@@ -209,6 +249,7 @@ def calculate_signal(stats):
         elif sot >= 3:
             points += 10
 
+    # Büyük şans
     if big is not None:
         if big >= 4:
             points += 15
@@ -217,6 +258,7 @@ def calculate_signal(stats):
         elif big >= 1:
             points += 5
 
+    # Korner
     if corners is not None:
         if corners >= 10:
             points += 10
@@ -228,11 +270,11 @@ def calculate_signal(stats):
     return min(points, 100)
 
 
-def show(stat):
-    if stat is None:
+def show(value):
+    if value is None:
         return "VERI YOK"
 
-    return f"{stat[0]:g} - {stat[1]:g}"
+    return f"{value[0]:g} - {value[1]:g}"
 
 
 def signal_text(points):
@@ -248,29 +290,32 @@ def signal_text(points):
     return "BASKI YETERSIZ"
 
 
-def run():
+def scan():
     print(
-        "\n===== GOL SINYAL TARAMASI =====",
+        "\n\n===== GOL SINYAL TARAMASI =====",
         flush=True
     )
 
     try:
-        urls = get_live_urls()
+        matches = get_live_matches()
 
         print(
-            "CANLI MAC SAYISI:",
-            len(urls),
+            f"CANLI MAC SAYISI: {len(matches)}",
             flush=True
         )
 
-        for url in urls:
+        for match in matches:
+
             try:
-                name, minute, score = get_match_info(url)
-                stats = get_stats(url)
+                name, minute, score = get_match_info(match)
+
+                stats = get_stats(match["url"])
+
                 points = calculate_signal(stats)
 
-                block = (
+                output = (
                     "\n==============================\n"
+                    f"MAC ID: {match['id']}\n"
                     f"MAC: {name}\n"
                     f"DAKIKA: {minute}\n"
                     f"SKOR: {score}\n"
@@ -284,26 +329,27 @@ def run():
                     "=============================="
                 )
 
-                print(block, flush=True)
+                print(output, flush=True)
 
             except Exception as e:
                 print(
-                    "MAC HATASI:",
-                    type(e).__name__,
-                    str(e),
+                    f"MAC HATASI [{match['id']}]: "
+                    f"{type(e).__name__}: {e}",
                     flush=True
                 )
 
     except Exception as e:
         print(
-            "GENEL HATA:",
-            type(e).__name__,
-            str(e),
+            f"GENEL HATA: {type(e).__name__}: {e}",
             flush=True
         )
 
 
 if __name__ == "__main__":
+
     while True:
-        run()
+
+        scan()
+
+        # Her 60 saniyede yeniden canlı veri çek
         time.sleep(60)
