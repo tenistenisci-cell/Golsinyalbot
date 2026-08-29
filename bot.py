@@ -1426,9 +1426,17 @@ while True:
             # -----------------------------------
             # 55+ güçlü sinyal
             # 75+ çok güçlü
+            # Sinyal araligi:
+            # 20-38 ve 50-82
             # -----------------------------------
 
-            if goal_score >= 55:
+            valid_signal_minute = (
+                20 <= match["minute"] <= 38
+                or
+                50 <= match["minute"] <= 82
+            )
+
+            if goal_score >= 55 and valid_signal_minute:
 
                 match_id = match["id"]
 
