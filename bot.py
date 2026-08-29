@@ -1,257 +1,72 @@
 import os
-import re
 import time
-import unicodedata
 import requests
-from urllib.parse import urljoin, urlsplit, urlunsplit
-from bs4 import BeautifulSoup
+from datetime import datetime
 
+# =========================================================
+# AYARLAR
+# =========================================================
 
-BASE_URL = "https://m.flashscore.com.tr/"
-LIVE_URL = "https://m.flashscore.com.tr/?s=2"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHECK_INTERVAL = 60
+
+# Aynı sinyalin sürekli gitmesini engeller
+sent_signals = set()
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 14) "
-        "AppleWebKit/537.36 "
-        "Chrome/120.0 Mobile Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Mobile Safari/537.36"
     ),
-    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
+    "Accept": "application/json,text/plain,*/*",
+    "Referer": "https://www.sofascore.com/",
 }
 
-session = requests.Session()
-session.headers.update(HEADERS)
 
-stats_cache = {}
-signal_memory = {}
-
-cached_chat_id = None
-
-STATS_CACHE_SECONDS = 600
-
-
-def normalize_text(text):
-    text = str(text).strip().casefold()
-
-    text = unicodedata.normalize(
-        "NFKD",
-        text
-    )
-
-    text = "".join(
-        c for c in text
-        if not unicodedata.combining(c)
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
-
-
-def get_soup(url):
-    r = session.get(
-        url,
-        timeout=25
-    )
-
-    r.raise_for_status()
-
-    return BeautifulSoup(
-        r.text,
-        "html.parser"
-    )
-
-
-def clean_match_url(url):
-    url = urljoin(
-        BASE_URL,
-        url
-    )
-
-    p = urlsplit(url)
-
-    path = p.path
-
-    if not path.endswith("/"):
-        path += "/"
-
-    return urlunsplit(
-        (
-            p.scheme,
-            p.netloc,
-            path,
-            "",
-            ""
-        )
-    )
-
-
-def to_number(text):
-    if text is None:
-        return None
-
-    text = (
-        str(text)
-        .replace(",", ".")
-        .replace("%", "")
-        .strip()
-    )
-
-    m = re.search(
-        r"-?\d+(?:\.\d+)?",
-        text
-    )
-
-    if not m:
-        return None
-
-    try:
-        return float(
-            m.group(0)
-        )
-
-    except Exception:
-        return None
-
-
-def get_chat_id():
-    global cached_chat_id
-
-    if TELEGRAM_CHAT_ID:
-        return str(
-            TELEGRAM_CHAT_ID
-        )
-
-    if cached_chat_id:
-        return cached_chat_id
-
-    if not TELEGRAM_BOT_TOKEN:
-        return None
-
-    try:
-        url = (
-            "https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}/"
-            "getUpdates"
-        )
-
-        r = requests.get(
-            url,
-            timeout=20
-        )
-
-        data = r.json()
-
-        if not data.get("ok"):
-            print(
-                "GETUPDATES HATASI:",
-                data,
-                flush=True
-            )
-            return None
-
-        results = data.get(
-            "result",
-            []
-        )
-
-        for item in reversed(results):
-            message = (
-                item.get("message")
-                or item.get(
-                    "channel_post"
-                )
-            )
-
-            if not message:
-                continue
-
-            chat = message.get(
-                "chat",
-                {}
-            )
-
-            chat_id = chat.get(
-                "id"
-            )
-
-            if chat_id is not None:
-                cached_chat_id = str(
-                    chat_id
-                )
-
-                print(
-                    "CHAT ID BULUNDU",
-                    flush=True
-                )
-
-                return cached_chat_id
-
-    except Exception as e:
-        print(
-            "CHAT ID HATASI:",
-            type(e).__name__,
-            str(e),
-            flush=True
-        )
-
-    return None
-
+# =========================================================
+# TELEGRAM
+# =========================================================
 
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN:
-        print(
-            "TELEGRAM TOKEN YOK",
-            flush=True
-        )
+        print("TELEGRAM_BOT_TOKEN YOK", flush=True)
         return False
 
-    chat_id = get_chat_id()
-
-    if not chat_id:
-        print(
-            "CHAT ID BULUNAMADI",
-            flush=True
-        )
+    if not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_CHAT_ID YOK", flush=True)
         return False
 
     try:
         url = (
-            "https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}/"
-            "sendMessage"
+            f"https://api.telegram.org/bot"
+            f"{TELEGRAM_BOT_TOKEN}/sendMessage"
         )
 
         r = requests.post(
             url,
             data={
-                "chat_id": chat_id,
+                "chat_id": TELEGRAM_CHAT_ID,
                 "text": text
             },
             timeout=20
         )
 
-        if r.ok:
-            print(
-                "TELEGRAM MESAJI GONDERILDI",
-                flush=True
-            )
-            return True
-
         print(
-            "TELEGRAM HATASI:",
+            "TELEGRAM CEVAP:",
             r.status_code,
-            r.text,
+            r.text[:500],
             flush=True
         )
+
+        if r.ok:
+            print("TELEGRAM MESAJI GONDERILDI", flush=True)
+            return True
+
+        print("TELEGRAM MESAJI GONDERILEMEDI", flush=True)
+        return False
 
     except Exception as e:
         print(
@@ -260,949 +75,609 @@ def send_telegram(text):
             str(e),
             flush=True
         )
+        return False
 
-    return False
 
+# =========================================================
+# SAYI DONUSTURME
+# =========================================================
+
+def num(value):
+    if value is None:
+        return 0
+
+    try:
+        value = str(value)
+        value = value.replace("%", "")
+        value = value.replace(",", ".")
+        return float(value)
+    except:
+        return 0
+
+
+# =========================================================
+# CANLI MACLAR
+# =========================================================
 
 def get_live_matches():
-    soup = get_soup(
-        LIVE_URL
-    )
-
-    lines = [
-        x.strip()
-        for x in soup.get_text(
-            "\n",
-            strip=True
-        ).splitlines()
-        if x.strip()
-    ]
-
-    live_rows = []
-
-    for i, line in enumerate(lines):
-
-        is_minute = bool(
-            re.fullmatch(
-                r"\d{1,3}(?:\+\d+)?'",
-                line
-            )
+    try:
+        url = (
+            "https://www.sofascore.com/api/v1/"
+            "sport/football/events/live"
         )
 
-        is_half = (
-            line == "Devre Arası"
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
         )
 
-        if not (
-            is_minute
-            or is_half
-        ):
-            continue
+        print(
+            "CANLI MAC HTTP:",
+            r.status_code,
+            flush=True
+        )
 
-        minute = line
-        teams = None
-        score = None
+        if not r.ok:
+            return []
 
-        for x in lines[
-            i + 1:i + 9
-        ]:
+        data = r.json()
 
-            if (
-                teams is None
-                and " - " in x
+        events = data.get("events", [])
+
+        live = []
+
+        for event in events:
+            status = event.get("status", {})
+            status_type = status.get("type", "")
+
+            if status_type not in (
+                "inprogress",
+                "halftime"
             ):
-                teams = x
                 continue
 
-            if (
-                teams
-                and re.fullmatch(
-                    r"\d+\s*-\s*\d+",
-                    x
-                )
-            ):
-                score = x
+            live.append(event)
+
+        return live
+
+    except Exception as e:
+        print(
+            "CANLI MAC HATASI:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+        return []
+
+
+# =========================================================
+# ISTATISTIK
+# =========================================================
+
+def get_stats(event_id):
+    try:
+        url = (
+            "https://www.sofascore.com/api/v1/event/"
+            f"{event_id}/statistics"
+        )
+
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        if not r.ok:
+            return None
+
+        data = r.json()
+
+        periods = data.get("statistics", [])
+
+        if not periods:
+            return None
+
+        selected = None
+
+        # Önce ALL istatistiğini bul
+        for period in periods:
+            if period.get("period") == "ALL":
+                selected = period
                 break
 
-        if teams and score:
-            live_rows.append(
-                {
-                    "minute": minute,
-                    "teams": teams,
-                    "score": score,
-                    "url": None
-                }
+        # ALL yoksa ilk istatistik
+        if selected is None:
+            selected = periods[0]
+
+        result = {
+            "xg_home": 0,
+            "xg_away": 0,
+            "shots_home": 0,
+            "shots_away": 0,
+            "sot_home": 0,
+            "sot_away": 0,
+            "corners_home": 0,
+            "corners_away": 0,
+            "big_home": 0,
+            "big_away": 0,
+        }
+
+        groups = selected.get("groups", [])
+
+        for group in groups:
+            items = group.get(
+                "statisticsItems",
+                []
             )
 
-    score_links = []
+            for item in items:
+                name = (
+                    item.get("name", "")
+                    .strip()
+                    .lower()
+                )
 
-    for a in soup.find_all(
-        "a",
-        href=True
-    ):
-        href = a.get(
-            "href",
+                home = item.get("home", 0)
+                away = item.get("away", 0)
+
+                if name in (
+                    "expected goals",
+                    "expected goals (xg)"
+                ):
+                    result["xg_home"] = num(home)
+                    result["xg_away"] = num(away)
+
+                elif name == "total shots":
+                    result["shots_home"] = num(home)
+                    result["shots_away"] = num(away)
+
+                elif name == "shots on target":
+                    result["sot_home"] = num(home)
+                    result["sot_away"] = num(away)
+
+                elif name == "corner kicks":
+                    result["corners_home"] = num(home)
+                    result["corners_away"] = num(away)
+
+                elif name == "big chances":
+                    result["big_home"] = num(home)
+                    result["big_away"] = num(away)
+
+        return result
+
+    except Exception as e:
+        print(
+            "ISTATISTIK HATASI:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+        return None
+
+
+# =========================================================
+# DAKIKA
+# =========================================================
+
+def get_minute(event):
+    status = event.get("status", {})
+
+    if status.get("type") == "halftime":
+        return "Devre Arasi"
+
+    description = status.get(
+        "description",
+        ""
+    )
+
+    if description:
+        return description
+
+    time_data = event.get("time", {})
+
+    timestamp = time_data.get(
+        "currentPeriodStartTimestamp"
+    )
+
+    if not timestamp:
+        return "Canli"
+
+    try:
+        now = int(time.time())
+        minute = int(
+            (now - timestamp) / 60
+        )
+
+        period = event.get(
+            "lastPeriod",
             ""
         )
 
-        text = a.get_text(
-            " ",
-            strip=True
-        )
+        if period == "period2":
+            minute += 45
 
-        if "/mac/" not in href:
-            continue
+        if minute < 0:
+            return "Canli"
 
-        if not re.fullmatch(
-            r"\d+\s*-\s*\d+",
-            text
-        ):
-            continue
+        if minute > 120:
+            return "Canli"
 
-        score_links.append(
-            {
-                "a": a,
-                "score": text,
-                "url": clean_match_url(
-                    href
-                )
-            }
-        )
+        return f"{minute}'"
 
-    used_urls = set()
-
-    for row in live_rows:
-
-        for item in score_links:
-
-            if (
-                item["url"]
-                in used_urls
-            ):
-                continue
-
-            if (
-                item["score"]
-                != row["score"]
-            ):
-                continue
-
-            node = item["a"]
-
-            found = False
-
-            for _ in range(10):
-
-                if node is None:
-                    break
-
-                nearby = node.get_text(
-                    " ",
-                    strip=True
-                )
-
-                if (
-                    row["teams"]
-                    in nearby
-                ):
-                    row["url"] = (
-                        item["url"]
-                    )
-
-                    used_urls.add(
-                        item["url"]
-                    )
-
-                    found = True
-                    break
-
-                node = node.parent
-
-            if found:
-                break
-
-    return [
-        x
-        for x in live_rows
-        if x["url"]
-    ]
+    except:
+        return "Canli"
 
 
-def empty_stats():
-    return {
-        "xg": None,
-        "shots": None,
-        "sot": None,
-        "big": None,
-        "corners": None,
-    }
+# =========================================================
+# PUAN HESABI
+# =========================================================
 
-
-def has_any_stats(stats):
-    return any(
-        value is not None
-        for value in stats.values()
+def calculate_score(stats):
+    shots = (
+        stats["shots_home"] +
+        stats["shots_away"]
     )
 
-
-def parse_stats_page(soup):
-    lines = [
-        x.strip()
-        for x in soup.get_text(
-            "\n",
-            strip=True
-        ).splitlines()
-        if x.strip()
-    ]
-
-    normalized = [
-        normalize_text(x)
-        for x in lines
-    ]
-
-    aliases = {
-        "gol beklentisi (xg)": "xg",
-        "gol beklentisi xg": "xg",
-        "toplam sut": "shots",
-        "isabetli sut": "sot",
-        "buyuk sans": "big",
-        "kornerler": "corners",
-        "korner": "corners",
-    }
-
-    stats = empty_stats()
-
-    for i, line in enumerate(
-        normalized
-    ):
-
-        key = aliases.get(line)
-
-        if not key:
-            continue
-
-        left = None
-        right = None
-
-        for distance in range(
-            1,
-            4
-        ):
-            index = i - distance
-
-            if index < 0:
-                break
-
-            value = to_number(
-                lines[index]
-            )
-
-            if value is not None:
-                left = value
-                break
-
-        for distance in range(
-            1,
-            4
-        ):
-            index = i + distance
-
-            if index >= len(lines):
-                break
-
-            value = to_number(
-                lines[index]
-            )
-
-            if value is not None:
-                right = value
-                break
-
-        if (
-            left is not None
-            and right is not None
-        ):
-            stats[key] = (
-                left,
-                right
-            )
-
-    return stats
-
-
-def merge_stats(
-    new_stats,
-    old_stats
-):
-    result = empty_stats()
-
-    for key in result:
-
-        if (
-            new_stats.get(key)
-            is not None
-        ):
-            result[key] = (
-                new_stats[key]
-            )
-
-        elif (
-            old_stats
-            and old_stats.get(key)
-            is not None
-        ):
-            result[key] = (
-                old_stats[key]
-            )
-
-    return result
-
-
-def get_stats(match_url):
-    match_url = clean_match_url(
-        match_url
+    sot = (
+        stats["sot_home"] +
+        stats["sot_away"]
     )
 
-    stats_urls = [
-        match_url
-        + "?t=istatistik",
-
-        match_url.rstrip("/")
-        + "/?t=istatistik",
-    ]
-
-    best_stats = empty_stats()
-
-    for attempt in range(
-        1,
-        4
-    ):
-
-        print(
-            "ISTATISTIK DENEME:",
-            attempt,
-            flush=True
-        )
-
-        for stats_url in stats_urls:
-
-            try:
-                r = session.get(
-                    stats_url,
-                    timeout=25,
-                    headers=HEADERS
-                )
-
-                r.raise_for_status()
-
-                soup = BeautifulSoup(
-                    r.text,
-                    "html.parser"
-                )
-
-                current = (
-                    parse_stats_page(
-                        soup
-                    )
-                )
-
-                best_stats = (
-                    merge_stats(
-                        current,
-                        best_stats
-                    )
-                )
-
-                if has_any_stats(
-                    best_stats
-                ):
-                    stats_cache[
-                        match_url
-                    ] = {
-                        "time": time.time(),
-                        "stats":
-                        best_stats.copy()
-                    }
-
-                    print(
-                        "ISTATISTIK ALINDI",
-                        flush=True
-                    )
-
-                    return best_stats
-
-            except Exception as e:
-
-                print(
-                    "ISTATISTIK HATASI:",
-                    type(e).__name__,
-                    str(e),
-                    flush=True
-                )
-
-        if attempt < 3:
-            time.sleep(2)
-
-    cached = stats_cache.get(
-        match_url
+    corners = (
+        stats["corners_home"] +
+        stats["corners_away"]
     )
 
-    if cached:
-
-        age = (
-            time.time()
-            - cached["time"]
-        )
-
-        if (
-            age
-            <= STATS_CACHE_SECONDS
-        ):
-            print(
-                "SON BASARILI ISTATISTIK "
-                "KULLANILIYOR",
-                flush=True
-            )
-
-            return cached[
-                "stats"
-            ].copy()
-
-    print(
-        "BU MAC ICIN "
-        "ISTATISTIK ALINAMADI",
-        flush=True
+    big = (
+        stats["big_home"] +
+        stats["big_away"]
     )
 
-    return empty_stats()
-
-
-def total(value):
-    if value is None:
-        return None
-
-    return (
-        value[0]
-        + value[1]
+    xg = (
+        stats["xg_home"] +
+        stats["xg_away"]
     )
 
+    score = 0
 
-def calculate_signal(stats):
-    points = 0
+    # Şut
+    if shots >= 10:
+        score += 8
+    if shots >= 15:
+        score += 7
+    if shots >= 20:
+        score += 5
 
-    xg = total(
-        stats["xg"]
-    )
+    # İsabetli şut
+    if sot >= 4:
+        score += 10
+    if sot >= 6:
+        score += 8
+    if sot >= 8:
+        score += 7
 
-    shots = total(
-        stats["shots"]
-    )
+    # Büyük şans
+    if big >= 1:
+        score += 8
+    if big >= 2:
+        score += 8
+    if big >= 3:
+        score += 4
 
-    sot = total(
-        stats["sot"]
-    )
+    # Korner
+    if corners >= 5:
+        score += 5
+    if corners >= 8:
+        score += 5
 
-    big = total(
-        stats["big"]
-    )
+    # xG
+    if xg >= 1.0:
+        score += 8
+    if xg >= 1.5:
+        score += 7
+    if xg >= 2.0:
+        score += 5
 
-    corners = total(
-        stats["corners"]
-    )
-
-    if xg is not None:
-
-        if xg >= 2.0:
-            points += 30
-
-        elif xg >= 1.3:
-            points += 22
-
-        elif xg >= 0.8:
-            points += 14
-
-        elif xg >= 0.4:
-            points += 7
-
-    if shots is not None:
-
-        if shots >= 20:
-            points += 25
-
-        elif shots >= 14:
-            points += 18
-
-        elif shots >= 9:
-            points += 10
-
-    if sot is not None:
-
-        if sot >= 8:
-            points += 25
-
-        elif sot >= 5:
-            points += 18
-
-        elif sot >= 3:
-            points += 10
-
-    if big is not None:
-
-        if big >= 4:
-            points += 15
-
-        elif big >= 2:
-            points += 10
-
-        elif big >= 1:
-            points += 5
-
-    if corners is not None:
-
-        if corners >= 10:
-            points += 10
-
-        elif corners >= 6:
-            points += 6
-
-        elif corners >= 3:
-            points += 3
-
-    return min(
-        points,
-        100
-    )
+    return min(score, 100)
 
 
-def show(value):
-    if value is None:
-        return "VERI YOK"
+# =========================================================
+# MESAJ
+# =========================================================
 
-    return (
-        f"{value[0]:g} - "
-        f"{value[1]:g}"
-    )
-
-
-def get_level(points):
-    if points >= 70:
-        return 3
-
-    if points >= 55:
-        return 2
-
-    if points >= 40:
-        return 1
-
-    return 0
-
-
-def level_text(level):
-    if level == 3:
-        return (
-            "🔥 COK GUCLU "
-            "GOL SINYALI"
-        )
-
-    if level == 2:
-        return (
-            "🟢 GUCLU "
-            "GOL SINYALI"
-        )
-
-    if level == 1:
-        return (
-            "⚠️ GOL IHTIMALI "
-            "ARTIYOR"
-        )
-
-    return "BASKI YETERSIZ"
-
-
-def repeat_seconds(level):
-    if level == 3:
-        return 300
-
-    if level == 2:
-        return 480
-
-    if level == 1:
-        return 900
-
-    return 999999
-
-
-def should_send_signal(
-    match_url,
-    level
-):
-    now = time.time()
-
-    info = signal_memory.get(
-        match_url
-    )
-
-    if not info:
-        return True
-
-    old_level = info.get(
-        "level",
-        0
-    )
-
-    last_sent = info.get(
-        "last_sent",
-        0
-    )
-
-    if level > old_level:
-        return True
-
-    wait = repeat_seconds(
-        level
-    )
-
-    if (
-        now - last_sent
-        >= wait
-    ):
-        return True
-
-    return False
-
-
-def remember_signal(
-    match_url,
-    level
-):
-    signal_memory[
-        match_url
-    ] = {
-        "level": level,
-        "last_sent":
-        time.time()
-    }
-
-
-def reset_signal_if_low(
-    match_url,
-    level
-):
-    if level == 0:
-        signal_memory.pop(
-            match_url,
-            None
-        )
-
-
-def handle_signal(
-    match,
+def make_message(
+    home,
+    away,
+    minute,
+    hs,
+    as_,
     stats,
-    points
+    score
 ):
-    level = get_level(
-        points
+    if score >= 60:
+        title = "🟢 GUCLU GOL SINYALI"
+    else:
+        title = "⚠️ GOL IHTIMALI ARTIYOR"
+
+    xg_home = stats["xg_home"]
+    xg_away = stats["xg_away"]
+
+    xg_text = (
+        f"{xg_home:g} - {xg_away:g}"
+        if xg_home > 0 or xg_away > 0
+        else "VERI YOK"
     )
 
-    reset_signal_if_low(
-        match["url"],
-        level
-    )
+    big_home = stats["big_home"]
+    big_away = stats["big_away"]
 
-    if level == 0:
-        print(
-            "BASKI YETERSIZ - "
-            "TELEGRAM YOK",
-            flush=True
-        )
-        return
-
-    if not should_send_signal(
-        match["url"],
-        level
-    ):
-        print(
-            "TEKRAR SURESI "
-            "DOLMADI",
-            flush=True
-        )
-        return
-
-    message = (
-        f"{level_text(level)}"
-        "\n\n"
-        f"⚽ {match['teams']}\n"
-        f"⏱ Dakika: "
-        f"{match['minute']}\n"
-        f"📊 Skor: "
-        f"{match['score']}\n"
-        f"🎯 xG: "
-        f"{show(stats['xg'])}\n"
+    return (
+        f"{title}\n\n"
+        f"⚽ {home} - {away}\n"
+        f"⏱ Dakika: {minute}\n"
+        f"📊 Skor: {hs}-{as_}\n"
+        f"🎯 xG: {xg_text}\n"
         f"🥅 Sut: "
-        f"{show(stats['shots'])}\n"
+        f"{int(stats['shots_home'])} - "
+        f"{int(stats['shots_away'])}\n"
         f"🎯 Isabetli: "
-        f"{show(stats['sot'])}\n"
+        f"{int(stats['sot_home'])} - "
+        f"{int(stats['sot_away'])}\n"
         f"🔥 Buyuk sans: "
-        f"{show(stats['big'])}\n"
+        f"{int(big_home)} - "
+        f"{int(big_away)}\n"
         f"🚩 Korner: "
-        f"{show(stats['corners'])}\n"
-        f"📈 Gol puani: "
-        f"{points}/100"
+        f"{int(stats['corners_home'])} - "
+        f"{int(stats['corners_away'])}\n"
+        f"📈 Gol puani: {score}/100"
     )
 
-    print(
-        "TELEGRAM GONDERME "
-        "DENEMESI:",
-        match["teams"],
-        flush=True
-    )
 
-    success = send_telegram(
-        message
-    )
-
-    if success:
-        remember_signal(
-            match["url"],
-            level
-        )
-
-
-def remove_finished_matches(
-    live_matches
-):
-    live_urls = {
-        x["url"]
-        for x in live_matches
-    }
-
-    for key in list(
-        signal_memory.keys()
-    ):
-
-        if key not in live_urls:
-            signal_memory.pop(
-                key,
-                None
-            )
-
-    for key in list(
-        stats_cache.keys()
-    ):
-
-        if key not in live_urls:
-            stats_cache.pop(
-                key,
-                None
-            )
-
+# =========================================================
+# TARAMA
+# =========================================================
 
 def scan():
     print(
         "\n==========================",
         flush=True
     )
-
     print(
         "YENI GOL SINYAL TARAMASI",
         flush=True
     )
-
     print(
         "==========================",
         flush=True
     )
 
+    matches = get_live_matches()
+
+    print(
+        "CANLI MAC SAYISI:",
+        len(matches),
+        flush=True
+    )
+
+    for event in matches:
+        try:
+            event_id = event.get("id")
+
+            home = (
+                event.get(
+                    "homeTeam",
+                    {}
+                ).get(
+                    "name",
+                    "Ev Sahibi"
+                )
+            )
+
+            away = (
+                event.get(
+                    "awayTeam",
+                    {}
+                ).get(
+                    "name",
+                    "Deplasman"
+                )
+            )
+
+            home_score = (
+                event.get(
+                    "homeScore",
+                    {}
+                ).get(
+                    "current",
+                    0
+                )
+            )
+
+            away_score = (
+                event.get(
+                    "awayScore",
+                    {}
+                ).get(
+                    "current",
+                    0
+                )
+            )
+
+            minute = get_minute(event)
+
+            print(
+                "\n--------------------------",
+                flush=True
+            )
+
+            print(
+                "MAC:",
+                home,
+                "-",
+                away,
+                flush=True
+            )
+
+            print(
+                "DAKIKA:",
+                minute,
+                flush=True
+            )
+
+            print(
+                "SKOR:",
+                f"{home_score}-{away_score}",
+                flush=True
+            )
+
+            stats = get_stats(event_id)
+
+            if not stats:
+                print(
+                    "ISTATISTIK: VERI YOK",
+                    flush=True
+                )
+                continue
+
+            print(
+                "ISTATISTIK ALINDI",
+                flush=True
+            )
+
+            print(
+                "SUT:",
+                int(stats["shots_home"]),
+                "-",
+                int(stats["shots_away"]),
+                flush=True
+            )
+
+            print(
+                "ISABETLI:",
+                int(stats["sot_home"]),
+                "-",
+                int(stats["sot_away"]),
+                flush=True
+            )
+
+            print(
+                "BUYUK SANS:",
+                int(stats["big_home"]),
+                "-",
+                int(stats["big_away"]),
+                flush=True
+            )
+
+            print(
+                "KORNER:",
+                int(stats["corners_home"]),
+                "-",
+                int(stats["corners_away"]),
+                flush=True
+            )
+
+            score = calculate_score(stats)
+
+            print(
+                "GOL PUANI:",
+                score,
+                flush=True
+            )
+
+            if score >= 60:
+                level = "GUCLU"
+
+            elif score >= 40:
+                level = "NORMAL"
+
+            else:
+                print(
+                    "BASKI YETERSIZ - TELEGRAM YOK",
+                    flush=True
+                )
+                continue
+
+            print(
+                "SEVIYE:",
+                level,
+                flush=True
+            )
+
+            signal_key = (
+                event_id,
+                level,
+                home_score,
+                away_score
+            )
+
+            if signal_key in sent_signals:
+                print(
+                    "BU SINYAL DAHA ONCE GONDERILDI",
+                    flush=True
+                )
+                continue
+
+            message = make_message(
+                home,
+                away,
+                minute,
+                home_score,
+                away_score,
+                stats,
+                score
+            )
+
+            print(
+                "TELEGRAM GONDERME DENEMESI:",
+                home,
+                "-",
+                away,
+                flush=True
+            )
+
+            if send_telegram(message):
+                sent_signals.add(signal_key)
+
+        except Exception as e:
+            print(
+                "MAC ISLEME HATASI:",
+                type(e).__name__,
+                str(e),
+                flush=True
+            )
+
+
+# =========================================================
+# BASLANGIC
+# =========================================================
+
+print(
+    "GOL SINYAL BOTU BASLADI",
+    flush=True
+)
+
+print(
+    "TELEGRAM TOKEN:",
+    "VAR" if TELEGRAM_BOT_TOKEN else "YOK",
+    flush=True
+)
+
+print(
+    "TELEGRAM CHAT ID:",
+    "VAR" if TELEGRAM_CHAT_ID else "YOK",
+    flush=True
+)
+
+while True:
     try:
-        matches = (
-            get_live_matches()
-        )
-
-        print(
-            "CANLI MAC SAYISI:",
-            len(matches),
-            flush=True
-        )
-
-        remove_finished_matches(
-            matches
-        )
-
-        for match in matches:
-
-            try:
-                stats = get_stats(
-                    match["url"]
-                )
-
-                if not has_any_stats(
-                    stats
-                ):
-                    print(
-                        "\nMAC:",
-                        match["teams"],
-                        flush=True
-                    )
-
-                    print(
-                        "DAKIKA:",
-                        match["minute"],
-                        flush=True
-                    )
-
-                    print(
-                        "SKOR:",
-                        match["score"],
-                        flush=True
-                    )
-
-                    print(
-                        "ISTATISTIK: "
-                        "VERI YOK",
-                        flush=True
-                    )
-
-                    print(
-                        "SINYAL "
-                        "HESAPLANMADI",
-                        flush=True
-                    )
-
-                    continue
-
-                points = (
-                    calculate_signal(
-                        stats
-                    )
-                )
-
-                print(
-                    "\n--------------------------",
-                    flush=True
-                )
-
-                print(
-                    "MAC:",
-                    match["teams"],
-                    flush=True
-                )
-
-                print(
-                    "DAKIKA:",
-                    match["minute"],
-                    flush=True
-                )
-
-                print(
-                    "SKOR:",
-                    match["score"],
-                    flush=True
-                )
-
-                print(
-                    "xG:",
-                    show(
-                        stats["xg"]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "SUT:",
-                    show(
-                        stats["shots"]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "ISABETLI:",
-                    show(
-                        stats["sot"]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "BUYUK SANS:",
-                    show(
-                        stats["big"]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "KORNER:",
-                    show(
-                        stats["corners"]
-                    ),
-                    flush=True
-                )
-
-                print(
-                    "GOL PUANI:",
-                    points,
-                    flush=True
-                )
-
-                print(
-                    "SEVIYE:",
-                    level_text(
-                        get_level(
-                            points
-                        )
-                    ),
-                    flush=True
-                )
-
-                handle_signal(
-                    match,
-                    stats,
-                    points
-                )
-
-            except Exception as e:
-
-                print(
-                    "MAC HATASI:",
-                    match.get(
-                        "teams",
-                        "BILINMEYEN"
-                    ),
-                    type(e).__name__,
-                    str(e),
-                    flush=True
-                )
-
+        scan()
     except Exception as e:
-
         print(
-            "GENEL HATA:",
+            "ANA DONGU HATASI:",
             type(e).__name__,
             str(e),
             flush=True
         )
 
-
-if __name__ == "__main__":
-
-    print(
-        "GOL SINYAL BOTU BASLADI",
-        flush=True
-    )
-
-    if TELEGRAM_BOT_TOKEN:
-        print(
-            "TELEGRAM TOKEN OK",
-            flush=True
-        )
-    else:
-        print(
-            "HATA: TELEGRAM_BOT_TOKEN "
-            "BULUNAMADI",
-            flush=True
-        )
-
-    while True:
-        scan()
-        time.sleep(60)
+    time.sleep(CHECK_INTERVAL)
