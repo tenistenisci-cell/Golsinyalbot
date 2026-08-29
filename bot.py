@@ -55,6 +55,18 @@ sent_signals = {}
 
 
 # =========================================================
+# YENI: MAC ISTATISTIK GECMISI
+# =========================================================
+
+# Her maçın önceki istatistiklerini burada tutacağız.
+# Railway yeniden başlarsa geçmiş sıfırlanır.
+# Bot tekrar birkaç dakika veri topladıktan sonra
+# son dönem baskısını yeniden hesaplamaya başlar.
+
+match_history = {}
+
+
+# =========================================================
 # YARDIMCI
 # =========================================================
 
@@ -259,7 +271,6 @@ def calculate_minute(fields):
                 else ""
             )
 
-            # İlk yarı
             if elapsed <= 55:
 
                 if elapsed < 1:
@@ -270,8 +281,6 @@ def calculate_minute(fields):
                     45
                 )
 
-            # Devre arası tahmini 15 dk
-            # İkinci yarıda gerçek oyun dakikasını üret
             calculated = elapsed - 15
 
             if calculated < 46:
@@ -280,7 +289,6 @@ def calculate_minute(fields):
             if calculated > 90:
                 calculated = 90
 
-            # Feed açıkça HT diyorsa
             if (
                 "half" in period_normal
                 and "time" in period_normal
@@ -350,7 +358,6 @@ def get_live_matches():
             fields.get("AB")
         )
 
-        # AB=2 canlı
         if status != "2":
             continue
 
@@ -622,12 +629,284 @@ def get_stats(match_id):
 
 
 # =========================================================
+# YENI: SON 5-10 DAKIKA BASKI TAKIBI
+# =========================================================
+
+def stat_total(stats, home_key, away_key):
+
+    return (
+        (stats.get(home_key) or 0)
+        +
+        (stats.get(away_key) or 0)
+    )
+
+
+def calculate_recent_pressure(
+    match,
+    stats
+):
+
+    match_id = match["id"]
+    now = time.time()
+
+    current = {
+        "time": now,
+        "minute": match["minute"],
+
+        "xg": stat_total(
+            stats,
+            "xg_home",
+            "xg_away"
+        ),
+
+        "shots": stat_total(
+            stats,
+            "shots_home",
+            "shots_away"
+        ),
+
+        "sot": stat_total(
+            stats,
+            "sot_home",
+            "sot_away"
+        ),
+
+        "big": stat_total(
+            stats,
+            "big_home",
+            "big_away"
+        ),
+
+        "corners": stat_total(
+            stats,
+            "corners_home",
+            "corners_away"
+        ),
+    }
+
+    history = match_history.setdefault(
+        match_id,
+        []
+    )
+
+    # Son 20 dakikalık kayıt yeterli
+    history[:] = [
+        item
+        for item in history
+        if now - item["time"] <= 1200
+    ]
+
+    baseline = None
+
+    # Öncelik yaklaşık 10 dakika öncesi
+    candidates = [
+        item
+        for item in history
+        if 300 <= now - item["time"] <= 900
+    ]
+
+    if candidates:
+
+        baseline = min(
+            candidates,
+            key=lambda item: abs(
+                (now - item["time"]) - 600
+            )
+        )
+
+    # Yeni kaydı bundan sonra ekliyoruz.
+    # Böylece kendi kendisiyle kıyaslanmıyor.
+    history.append(current)
+
+    # Henüz en az 5 dakikalık geçmiş yoksa
+    # baskı bonusu verme.
+    if baseline is None:
+
+        return 0, None
+
+    delta_xg = max(
+        0,
+        current["xg"]
+        - baseline["xg"]
+    )
+
+    delta_shots = max(
+        0,
+        current["shots"]
+        - baseline["shots"]
+    )
+
+    delta_sot = max(
+        0,
+        current["sot"]
+        - baseline["sot"]
+    )
+
+    delta_big = max(
+        0,
+        current["big"]
+        - baseline["big"]
+    )
+
+    delta_corners = max(
+        0,
+        current["corners"]
+        - baseline["corners"]
+    )
+
+    pressure = 0
+
+    # -------------------------
+    # xG artışı
+    # -------------------------
+
+    if delta_xg >= 0.70:
+        pressure += 10
+
+    elif delta_xg >= 0.50:
+        pressure += 8
+
+    elif delta_xg >= 0.35:
+        pressure += 6
+
+    elif delta_xg >= 0.20:
+        pressure += 4
+
+    elif delta_xg >= 0.10:
+        pressure += 2
+
+
+    # -------------------------
+    # Şut artışı
+    # -------------------------
+
+    if delta_shots >= 7:
+        pressure += 9
+
+    elif delta_shots >= 5:
+        pressure += 7
+
+    elif delta_shots >= 4:
+        pressure += 5
+
+    elif delta_shots >= 3:
+        pressure += 3
+
+    elif delta_shots >= 2:
+        pressure += 2
+
+
+    # -------------------------
+    # İsabetli şut artışı
+    # -------------------------
+
+    if delta_sot >= 4:
+        pressure += 10
+
+    elif delta_sot >= 3:
+        pressure += 8
+
+    elif delta_sot >= 2:
+        pressure += 6
+
+    elif delta_sot >= 1:
+        pressure += 3
+
+
+    # -------------------------
+    # Büyük şans artışı
+    # -------------------------
+
+    if delta_big >= 2:
+        pressure += 7
+
+    elif delta_big >= 1:
+        pressure += 4
+
+
+    # -------------------------
+    # Korner artışı
+    # -------------------------
+
+    if delta_corners >= 4:
+        pressure += 4
+
+    elif delta_corners >= 3:
+        pressure += 3
+
+    elif delta_corners >= 2:
+        pressure += 2
+
+
+    # -------------------------
+    # Ani baskı kombinasyonları
+    # -------------------------
+
+    if (
+        delta_shots >= 4
+        and delta_sot >= 2
+    ):
+        pressure += 4
+
+    if (
+        delta_xg >= 0.35
+        and delta_sot >= 2
+    ):
+        pressure += 4
+
+    if (
+        delta_big >= 1
+        and delta_sot >= 2
+    ):
+        pressure += 3
+
+
+    # Çok aşırı bonus vermesin.
+    pressure = min(
+        pressure,
+        30
+    )
+
+    details = {
+        "minutes": max(
+            1,
+            match["minute"]
+            - baseline["minute"]
+        ),
+
+        "xg": round(
+            delta_xg,
+            2
+        ),
+
+        "shots": int(
+            delta_shots
+        ),
+
+        "sot": int(
+            delta_sot
+        ),
+
+        "big": int(
+            delta_big
+        ),
+
+        "corners": int(
+            delta_corners
+        ),
+    }
+
+    return pressure, details
+
+
+# =========================================================
 # 0 - 100 GOL PUANI
 # =========================================================
 
 def calculate_goal_score(
     match,
-    stats
+    stats,
+    recent_pressure=0
 ):
 
     minute = match["minute"]
@@ -777,7 +1056,8 @@ def calculate_goal_score(
 
 
     # -------------------------
-    # Dakika baskısı maksimum 10
+    # Dakika baskısı
+    # ESKI HALINI KORUDUK
     # -------------------------
 
     if minute >= 86:
@@ -838,6 +1118,13 @@ def calculate_goal_score(
         and sot >= 5
     ):
         score += 3
+
+
+    # =====================================================
+    # YENI: SON 5-10 DAKIKA BASKI BONUSU
+    # =====================================================
+
+    score += recent_pressure
 
 
     return min(
@@ -944,7 +1231,13 @@ while True:
             flush=True
         )
 
+        active_match_ids = set()
+
         for match in matches:
+
+            active_match_ids.add(
+                match["id"]
+            )
 
             print(
                 "\n-------------------------",
@@ -1022,9 +1315,106 @@ while True:
                 flush=True
             )
 
+            # =================================================
+            # YENI: SON DAKIKALARDAKI BASKIYI HESAPLA
+            # =================================================
+
+            recent_pressure, pressure_details = (
+                calculate_recent_pressure(
+                    match,
+                    stats
+                )
+            )
+
+            if pressure_details:
+
+                print(
+                    "SON DONEM:",
+                    str(
+                        pressure_details[
+                            "minutes"
+                        ]
+                    )
+                    + " DK",
+                    flush=True
+                )
+
+                print(
+                    "SON DONEM xG:",
+                    "+"
+                    + str(
+                        pressure_details[
+                            "xg"
+                        ]
+                    ),
+                    flush=True
+                )
+
+                print(
+                    "SON DONEM SUT:",
+                    "+"
+                    + str(
+                        pressure_details[
+                            "shots"
+                        ]
+                    ),
+                    flush=True
+                )
+
+                print(
+                    "SON DONEM ISABETLI:",
+                    "+"
+                    + str(
+                        pressure_details[
+                            "sot"
+                        ]
+                    ),
+                    flush=True
+                )
+
+                print(
+                    "SON DONEM BUYUK SANS:",
+                    "+"
+                    + str(
+                        pressure_details[
+                            "big"
+                        ]
+                    ),
+                    flush=True
+                )
+
+                print(
+                    "SON DONEM KORNER:",
+                    "+"
+                    + str(
+                        pressure_details[
+                            "corners"
+                        ]
+                    ),
+                    flush=True
+                )
+
+                print(
+                    "BASKI BONUSU:",
+                    "+"
+                    + str(
+                        recent_pressure
+                    ),
+                    flush=True
+                )
+
+            else:
+
+                print(
+                    "BASKI GECMISI TOPLANIYOR...",
+                    flush=True
+                )
+
+
             goal_score = calculate_goal_score(
                 match,
-                stats
+                stats,
+                recent_pressure
             )
 
             print(
@@ -1111,11 +1501,43 @@ while True:
                         }
 
                         print(
-                            "SINyal TELEGRAMA GONDERILDI",
+                            "SINYAL TELEGRAMA GONDERILDI",
                             flush=True
                         )
 
             time.sleep(1)
+
+
+        # =================================================
+        # BITEN MACLARIN GECMISINI TEMIZLE
+        # =================================================
+
+        old_history_ids = list(
+            match_history.keys()
+        )
+
+        for old_id in old_history_ids:
+
+            if old_id not in active_match_ids:
+
+                match_history.pop(
+                    old_id,
+                    None
+                )
+
+        old_signal_ids = list(
+            sent_signals.keys()
+        )
+
+        for old_id in old_signal_ids:
+
+            if old_id not in active_match_ids:
+
+                sent_signals.pop(
+                    old_id,
+                    None
+                )
+
 
     except Exception as e:
 
