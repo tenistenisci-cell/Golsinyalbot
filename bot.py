@@ -20,20 +20,34 @@ session = requests.Session()
 session.headers.update(HEADERS)
 
 
+# =========================================================
+# CANLI MAC SATIRINI OKU
+# =========================================================
+
 def get_text_before_score(score_link):
     pieces = []
     sibling = score_link.previous_sibling
 
     while sibling is not None:
+
         if isinstance(sibling, Tag):
+
             if sibling.name == "br":
                 break
 
-            text = sibling.get_text(" ", strip=True)
+            text = sibling.get_text(
+                " ",
+                strip=True
+            )
+
             if text:
                 pieces.append(text)
 
-        elif isinstance(sibling, NavigableString):
+        elif isinstance(
+            sibling,
+            NavigableString
+        ):
+
             text = str(sibling).strip()
 
             if text:
@@ -46,14 +60,23 @@ def get_text_before_score(score_link):
     return " ".join(pieces).strip()
 
 
+# =========================================================
+# DAKIKA + TAKIMLAR
+# =========================================================
+
 def parse_match_line(text):
     text = " ".join(text.split())
 
     if text.startswith("Devre Arası"):
+
         minute = "Devre Arası"
-        teams = text[len("Devre Arası"):].strip()
+
+        teams = text[
+            len("Devre Arası"):
+        ].strip()
 
     else:
+
         m = re.match(
             r"^(\d+(?:\+\d+)?')\s*(.+)$",
             text
@@ -68,7 +91,10 @@ def parse_match_line(text):
     if " - " not in teams:
         return None
 
-    home, away = teams.split(" - ", 1)
+    home, away = teams.split(
+        " - ",
+        1
+    )
 
     home = home.strip()
     away = away.strip()
@@ -83,8 +109,13 @@ def parse_match_line(text):
     }
 
 
+# =========================================================
+# CANLI MACLAR
+# =========================================================
+
 def get_live_matches():
     try:
+
         r = session.get(
             LIVE_URL,
             timeout=25
@@ -111,6 +142,7 @@ def get_live_matches():
             "a",
             href=True
         ):
+
             href = score_link.get(
                 "href",
                 ""
@@ -155,13 +187,17 @@ def get_live_matches():
                 "home": parsed["home"],
                 "away": parsed["away"],
                 "minute": parsed["minute"],
-                "score": score.replace(" ", ""),
+                "score": score.replace(
+                    " ",
+                    ""
+                ),
                 "url": url,
             })
 
         return matches
 
     except Exception as e:
+
         print(
             "CANLI MAC HATASI:",
             type(e).__name__,
@@ -172,28 +208,77 @@ def get_live_matches():
         return []
 
 
+# =========================================================
+# MATCH ID
+# =========================================================
+
 def get_match_id(match_url):
     try:
+
         path = urlsplit(
             match_url
         ).path
 
         parts = [
-            x for x in path.split("/")
+            x
+            for x in path.split("/")
             if x
         ]
 
-        # Flashscore maç linkinde son parça çoğu zaman event ID'dir.
         if not parts:
             return None
 
-        return parts[-1]
+        match_id = parts[-1]
 
-    except:
+        return match_id
+
+    except Exception:
         return None
 
 
+# =========================================================
+# SAYI TEMIZLE
+# =========================================================
+
+def clean_number(value):
+
+    if value is None:
+        return None
+
+    value = str(value)
+
+    value = value.replace(
+        "%",
+        ""
+    )
+
+    value = value.replace(
+        ",",
+        "."
+    )
+
+    value = value.strip()
+
+    try:
+
+        number = float(value)
+
+        if number.is_integer():
+            return int(number)
+
+        return number
+
+    except Exception:
+
+        return value
+
+
+# =========================================================
+# ISTATISTIK PARSER
+# =========================================================
+
 def parse_stats_feed(text):
+
     result = {
         "xg_home": None,
         "xg_away": None,
@@ -207,28 +292,18 @@ def parse_stats_feed(text):
         "big_away": None,
     }
 
-    # Flashscore feed bölümleri ~ ile ayrılır
     parts = text.split("~")
 
     current_name = None
     home_value = None
     away_value = None
 
-    def clean_number(value):
-        if value is None:
-            return None
+    def save_stat(
+        name,
+        home,
+        away
+    ):
 
-        value = str(value)
-        value = value.replace("%", "")
-        value = value.replace(",", ".")
-        value = value.strip()
-
-        try:
-            return float(value)
-        except:
-            return value
-
-    def save_stat(name, home, away):
         if not name:
             return
 
@@ -236,42 +311,76 @@ def parse_stats_feed(text):
 
         if (
             "expected goals" in low
-            or low == "xg"
             or "beklenen gol" in low
+            or low == "xg"
         ):
-            result["xg_home"] = clean_number(home)
-            result["xg_away"] = clean_number(away)
+
+            result["xg_home"] = clean_number(
+                home
+            )
+
+            result["xg_away"] = clean_number(
+                away
+            )
 
         elif (
             "total shots" in low
             or "toplam şut" in low
-            or "şutlar" == low
+            or low == "şutlar"
+            or low == "shots"
         ):
-            result["shots_home"] = clean_number(home)
-            result["shots_away"] = clean_number(away)
+
+            result["shots_home"] = clean_number(
+                home
+            )
+
+            result["shots_away"] = clean_number(
+                away
+            )
 
         elif (
             "shots on target" in low
             or "isabetli şut" in low
         ):
-            result["sot_home"] = clean_number(home)
-            result["sot_away"] = clean_number(away)
+
+            result["sot_home"] = clean_number(
+                home
+            )
+
+            result["sot_away"] = clean_number(
+                away
+            )
 
         elif (
             "corner kicks" in low
+            or "corners" in low
             or "korner" in low
         ):
-            result["corners_home"] = clean_number(home)
-            result["corners_away"] = clean_number(away)
+
+            result["corners_home"] = clean_number(
+                home
+            )
+
+            result["corners_away"] = clean_number(
+                away
+            )
 
         elif (
             "big chances" in low
             or "büyük şans" in low
+            or "buyuk sans" in low
         ):
-            result["big_home"] = clean_number(home)
-            result["big_away"] = clean_number(away)
+
+            result["big_home"] = clean_number(
+                home
+            )
+
+            result["big_away"] = clean_number(
+                away
+            )
 
     for part in parts:
+
         if "÷" not in part:
             continue
 
@@ -280,14 +389,13 @@ def parse_stats_feed(text):
             1
         )
 
+        key = key.strip()
         value = value.strip()
 
-        # Flashscore istatistik feedinde
-        # SA = isim
-        # SG = ev
-        # SH = deplasman
         if key == "SA":
+
             if current_name is not None:
+
                 save_stat(
                     current_name,
                     home_value,
@@ -299,12 +407,15 @@ def parse_stats_feed(text):
             away_value = None
 
         elif key == "SG":
+
             home_value = value
 
         elif key == "SH":
+
             away_value = value
 
     if current_name is not None:
+
         save_stat(
             current_name,
             home_value,
@@ -314,31 +425,52 @@ def parse_stats_feed(text):
     return result
 
 
-def get_statistics(match):
+# =========================================================
+# ISTATISTIK ISTEGI
+# =========================================================
+
+def get_statistics(match, show_raw=False):
+
     match_id = get_match_id(
         match["url"]
     )
 
+    print(
+        "MATCH ID:",
+        match_id,
+        flush=True
+    )
+
     if not match_id:
+
         print(
             "MATCH ID BULUNAMADI",
             flush=True
         )
+
         return None
 
-    # Flashscore canlı maç istatistik feedi
     urls = [
-        f"https://2.flashscore.ninja/2/x/feed/df_st_1_{match_id}",
-        f"https://1.flashscore.ninja/1/x/feed/df_st_1_{match_id}",
+        (
+            "https://2.flashscore.ninja/"
+            f"2/x/feed/df_st_1_{match_id}"
+        ),
+        (
+            "https://1.flashscore.ninja/"
+            f"1/x/feed/df_st_1_{match_id}"
+        ),
     ]
 
     for url in urls:
+
         try:
+
             r = session.get(
                 url,
                 headers={
                     **HEADERS,
-                    "x-fsign": "SW9D1eZo"
+                    "x-fsign": "SW9D1eZo",
+                    "Referer": BASE_URL,
                 },
                 timeout=20
             )
@@ -352,16 +484,42 @@ def get_statistics(match):
             if not r.ok:
                 continue
 
-            if not r.text.strip():
+            raw = r.text.strip()
+
+            if not raw:
+
+                print(
+                    "STAT CEVABI BOS",
+                    flush=True
+                )
+
                 continue
 
+            if show_raw:
+
+                print(
+                    "\n========== HAM STAT VERISI ==========",
+                    flush=True
+                )
+
+                print(
+                    raw[:4000],
+                    flush=True
+                )
+
+                print(
+                    "========== HAM STAT SONU ==========\n",
+                    flush=True
+                )
+
             stats = parse_stats_feed(
-                r.text
+                raw
             )
 
             return stats
 
         except Exception as e:
+
             print(
                 "STAT HATASI:",
                 type(e).__name__,
@@ -372,13 +530,20 @@ def get_statistics(match):
     return None
 
 
+# =========================================================
+# TEST
+# =========================================================
+
 print(
-    "ISTATISTIK TEST BOTU BASLADI",
+    "HAM ISTATISTIK TEST BOTU BASLADI",
     flush=True
 )
 
+
 while True:
+
     try:
+
         matches = get_live_matches()
 
         print(
@@ -397,11 +562,19 @@ while True:
             flush=True
         )
 
-        # Log şişmesin diye ilk 5 canlı maçı test ediyoruz
+        raw_gosterildi = False
+
+        # İlk 5 maçı dene.
+        # HAM veri sadece bir kez yazılır.
         for match in matches[:5]:
 
             print(
-                "\nMAC:",
+                "\n----------------------------",
+                flush=True
+            )
+
+            print(
+                "MAC:",
                 match["home"],
                 "-",
                 match["away"],
@@ -421,15 +594,21 @@ while True:
             )
 
             stats = get_statistics(
-                match
+                match,
+                show_raw=not raw_gosterildi
             )
 
-            if not stats:
+            if stats is None:
+
                 print(
                     "ISTATISTIK: VERI YOK",
                     flush=True
                 )
+
                 continue
+
+            if not raw_gosterildi:
+                raw_gosterildi = True
 
             print(
                 "xG:",
@@ -472,6 +651,7 @@ while True:
             )
 
     except Exception as e:
+
         print(
             "ANA HATA:",
             type(e).__name__,
@@ -479,4 +659,5 @@ while True:
             flush=True
         )
 
-    time.sleep(60)
+    # Logu şişirmemek için 5 dakika
+    time.sleep(300)
