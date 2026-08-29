@@ -1,88 +1,164 @@
-import os
 import time
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+BASE_URL = "https://m.flashscore.com.tr/"
+LIVE_URL = "https://m.flashscore.com.tr/?s=2"
 
-print("BOT BASLADI", flush=True)
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 14) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Mobile Safari/537.36"
+    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+}
 
-if not TOKEN:
-    print("HATA: TELEGRAM_BOT_TOKEN YOK", flush=True)
+session = requests.Session()
+session.headers.update(HEADERS)
 
-else:
+
+def get_live_matches():
     try:
-        # Son Telegram mesajlarını al
-        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+        r = session.get(LIVE_URL, timeout=25)
 
-        r = requests.get(url, timeout=20)
-        data = r.json()
+        print("FLASHSCORE HTTP:", r.status_code, flush=True)
 
-        print("GETUPDATES HTTP:", r.status_code, flush=True)
+        if not r.ok:
+            return []
 
-        if not data.get("ok"):
-            print("TELEGRAM HATASI:", data, flush=True)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        else:
-            updates = data.get("result", [])
+        matches = []
 
-            if not updates:
-                print(
-                    "MESAJ BULUNAMADI. TELEGRAM BOTUNA /start GONDER.",
-                    flush=True
-                )
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+
+            # Canlı maç detay linkleri /mac/... biçiminde
+            if "/mac/" not in href:
+                continue
+
+            score = a.get_text(" ", strip=True)
+
+            # Skor formatı değilse geç
+            if not score or "-" not in score:
+                continue
+
+            parent = a.parent
+
+            if parent is None:
+                continue
+
+            text = parent.get_text(" ", strip=True)
+
+            # Takım isimlerini ve dakikayı parent metninden alacağız
+            if score not in text:
+                continue
+
+            before_score = text.rsplit(score, 1)[0].strip()
+
+            # Örnek:
+            # 52'Iwaki - Albirex Niigata
+            # Devre Arası Iwaki - Albirex Niigata
+
+            minute = ""
+
+            if "Devre Arası" in before_score:
+                minute = "Devre Arası"
+                teams_text = before_score.replace(
+                    "Devre Arası",
+                    "",
+                    1
+                ).strip()
+
+            elif "Uzatma" in before_score:
+                minute = "Uzatma"
+                teams_text = before_score.replace(
+                    "Uzatma",
+                    "",
+                    1
+                ).strip()
 
             else:
-                chat_id = None
+                import re
 
-                # En son mesajdan chat ID bul
-                for update in reversed(updates):
-                    msg = update.get("message")
+                m = re.match(
+                    r"^(\d+(?:\+\d+)?')(.+)$",
+                    before_score
+                )
 
-                    if msg and msg.get("chat"):
-                        chat_id = msg["chat"]["id"]
-                        break
+                if not m:
+                    continue
 
-                if chat_id is None:
-                    print("CHAT ID BULUNAMADI", flush=True)
+                minute = m.group(1)
+                teams_text = m.group(2).strip()
 
-                else:
-                    print("CHAT ID BULUNDU", flush=True)
+            if " - " not in teams_text:
+                continue
 
-                    send_url = (
-                        f"https://api.telegram.org/bot"
-                        f"{TOKEN}/sendMessage"
-                    )
+            home, away = teams_text.split(" - ", 1)
 
-                    response = requests.post(
-                        send_url,
-                        data={
-                            "chat_id": chat_id,
-                            "text": "✅ GOL SINYAL BOTU TELEGRAM TESTI BASARILI"
-                        },
-                        timeout=20
-                    )
+            home = home.strip()
+            away = away.strip()
 
-                    print(
-                        "GONDERIM HTTP:",
-                        response.status_code,
-                        flush=True
-                    )
+            if not home or not away:
+                continue
 
-                    print(
-                        "GONDERIM CEVABI:",
-                        response.text,
-                        flush=True
-                    )
+            url = urljoin(BASE_URL, href)
+
+            # Aynı maç iki kere eklenmesin
+            if any(x["url"] == url for x in matches):
+                continue
+
+            matches.append({
+                "home": home,
+                "away": away,
+                "minute": minute,
+                "score": score,
+                "url": url,
+            })
+
+        return matches
 
     except Exception as e:
         print(
-            "HATA:",
+            "CANLI MAC HATASI:",
             type(e).__name__,
             str(e),
             flush=True
         )
+        return []
 
 
-# Railway container kapanmasın
+print("CANLI MAC TEST BOTU BASLADI", flush=True)
+
 while True:
-    time.sleep(3600)
+    print(
+        "\n==============================",
+        flush=True
+    )
+
+    print(
+        "YENI CANLI MAC TARAMASI",
+        flush=True
+    )
+
+    matches = get_live_matches()
+
+    print(
+        "CANLI MAC SAYISI:",
+        len(matches),
+        flush=True
+    )
+
+    for match in matches:
+        print(
+            f"{match['minute']} | "
+            f"{match['home']} - {match['away']} | "
+            f"{match['score']}",
+            flush=True
+        )
+
+    # Railway loglarını şişirmemek için 60 saniye
+    time.sleep(60)
