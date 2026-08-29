@@ -1428,7 +1428,16 @@ while True:
             # 75+ çok güçlü
             # -----------------------------------
 
-            if goal_score >= 55:
+            valid_signal_minute = (
+    20 <= match["minute"] <= 39
+    or
+    46 <= match["minute"] <= 84
+)
+
+if (
+    goal_score >= 55
+    and valid_signal_minute
+):
 
                 match_id = match["id"]
 
