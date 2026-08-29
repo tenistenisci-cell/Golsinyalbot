@@ -373,19 +373,27 @@ def handle_signal(match, stats, points):
     key = match["url"]
 
     current_level = get_level(points)
-
     previous_level = match_states.get(key, 0)
 
-    # Baskı yoksa hafızayı sıfırla
+    print(
+        "SINYAL KONTROL:",
+        match["teams"],
+        "ESKI:",
+        previous_level,
+        "YENI:",
+        current_level,
+        "PUAN:",
+        points,
+        flush=True
+    )
+
     if current_level == 0:
         match_states[key] = 0
         return
 
-    # Aynı seviyedeyse tekrar mesaj atma
     if current_level == previous_level:
         return
 
-    # Seviye yükseldiyse veya sıfırdan başladıysa mesaj at
     if current_level > previous_level or previous_level == 0:
 
         message = (
@@ -401,11 +409,24 @@ def handle_signal(match, stats, points):
             f"📈 Gol puani: {points}/100"
         )
 
-        if send_telegram(message):
+        print(
+            "TELEGRAM GONDERME DENEMESI:",
+            match["teams"],
+            flush=True
+        )
+
+        success = send_telegram(message)
+
+        if success:
             match_states[key] = current_level
 
+            print(
+                "SINYAL HAFIZAYA ALINDI:",
+                current_level,
+                flush=True
+            )
+
     else:
-        # Baskı azaldıysa sadece hafızayı güncelle
         match_states[key] = current_level
 
 
@@ -428,7 +449,6 @@ def scan():
 
             try:
                 stats = get_stats(match["url"])
-
                 points = calculate_signal(stats)
 
                 print(
