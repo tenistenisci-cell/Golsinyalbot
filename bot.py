@@ -18,7 +18,7 @@ HEADERS = {
 session = requests.Session()
 session.headers.update(HEADERS)
 
-sent_signals = {}
+match_states = {}
 
 
 def get_soup(url):
@@ -29,7 +29,6 @@ def get_soup(url):
 
 def clean_match_url(url):
     url = urljoin(BASE_URL, url)
-
     p = urlsplit(url)
 
     path = p.path
@@ -183,7 +182,6 @@ def get_live_matches():
     score_links = []
 
     for a in soup.find_all("a", href=True):
-
         href = a["href"]
         text = a.get_text(" ", strip=True)
 
@@ -232,7 +230,6 @@ def get_live_matches():
 
 def get_stats(match_url):
     base = clean_match_url(match_url)
-
     stats_url = base + "?t=istatistik"
 
     soup = get_soup(stats_url)
@@ -273,10 +270,7 @@ def get_stats(match_url):
         if left is None or right is None:
             continue
 
-        stats[wanted[line]] = (
-            left,
-            right
-        )
+        stats[wanted[line]] = (left, right)
 
     return stats
 
@@ -349,57 +343,70 @@ def show(value):
     return f"{value[0]:g} - {value[1]:g}"
 
 
-def signal_text(points):
+def get_level(points):
     if points >= 70:
-        return "COK GUCLU"
+        return 3
 
-    elif points >= 55:
-        return "GUCLU"
+    if points >= 55:
+        return 2
 
-    elif points >= 40:
-        return "GOL IHTIMALI ARTIYOR"
+    if points >= 40:
+        return 1
+
+    return 0
+
+
+def level_text(level):
+    if level == 3:
+        return "🔥 COK GUCLU GOL BASKISI"
+
+    if level == 2:
+        return "🟢 GUCLU GOL BASKISI"
+
+    if level == 1:
+        return "⚠️ GOL IHTIMALI ARTIYOR"
 
     return "BASKI YETERSIZ"
 
 
-def maybe_send_signal(match, stats, points):
-    if points < 55:
-        return
-
+def handle_signal(match, stats, points):
     key = match["url"]
 
-    minute_text = match["minute"]
+    current_level = get_level(points)
 
-    minute_num = 0
+    previous_level = match_states.get(key, 0)
 
-    m = re.search(r"\d+", minute_text)
+    # Baskı yoksa hafızayı sıfırla
+    if current_level == 0:
+        match_states[key] = 0
+        return
 
-    if m:
-        minute_num = int(m.group())
+    # Aynı seviyedeyse tekrar mesaj atma
+    if current_level == previous_level:
+        return
 
-    last_minute = sent_signals.get(key)
+    # Seviye yükseldiyse veya sıfırdan başladıysa mesaj at
+    if current_level > previous_level or previous_level == 0:
 
-    if last_minute is not None:
-        if minute_num - last_minute < 10:
-            return
+        message = (
+            f"{level_text(current_level)}\n\n"
+            f"⚽ {match['teams']}\n"
+            f"⏱ Dakika: {match['minute']}\n"
+            f"📊 Skor: {match['score']}\n"
+            f"🎯 xG: {show(stats['xg'])}\n"
+            f"🥅 Sut: {show(stats['shots'])}\n"
+            f"🎯 Isabetli: {show(stats['sot'])}\n"
+            f"🔥 Buyuk sans: {show(stats['big'])}\n"
+            f"🚩 Korner: {show(stats['corners'])}\n"
+            f"📈 Gol puani: {points}/100"
+        )
 
-    strength = "🔥 COK GUCLU GOL SINYALI" if points >= 70 else "🟢 GUCLU GOL SINYALI"
+        if send_telegram(message):
+            match_states[key] = current_level
 
-    message = (
-        f"{strength}\n\n"
-        f"⚽ {match['teams']}\n"
-        f"⏱ Dakika: {match['minute']}\n"
-        f"📊 Skor: {match['score']}\n"
-        f"🎯 xG: {show(stats['xg'])}\n"
-        f"🥅 Sut: {show(stats['shots'])}\n"
-        f"🎯 Isabetli: {show(stats['sot'])}\n"
-        f"🚩 Korner: {show(stats['corners'])}\n"
-        f"🔥 Buyuk sans: {show(stats['big'])}\n"
-        f"📈 Gol puani: {points}/100"
-    )
-
-    if send_telegram(message):
-        sent_signals[key] = minute_num
+    else:
+        # Baskı azaldıysa sadece hafızayı güncelle
+        match_states[key] = current_level
 
 
 def scan():
@@ -438,9 +445,9 @@ def scan():
                 print("BUYUK SANS:", show(stats["big"]), flush=True)
                 print("KORNER:", show(stats["corners"]), flush=True)
                 print("GOL PUANI:", points, flush=True)
-                print("SINYAL:", signal_text(points), flush=True)
+                print("SEVIYE:", level_text(get_level(points)), flush=True)
 
-                maybe_send_signal(
+                handle_signal(
                     match,
                     stats,
                     points
@@ -470,25 +477,15 @@ def scan():
 
 if __name__ == "__main__":
 
-    if not TELEGRAM_BOT_TOKEN:
-        print(
-            "HATA: TELEGRAM_BOT_TOKEN bulunamadi",
-            flush=True
-        )
-
-    else:
+    if TELEGRAM_BOT_TOKEN:
         print(
             "TELEGRAM TOKEN OK",
             flush=True
         )
-
+    else:
         print(
-            "TELEGRAM BAGLANTI TESTI BASLIYOR",
+            "HATA: TELEGRAM_BOT_TOKEN BULUNAMADI",
             flush=True
-        )
-
-        send_telegram(
-            "✅ Gol sinyal botu aktif!\nTelegram bağlantısı başarılı."
         )
 
     while True:
