@@ -1038,7 +1038,7 @@ while True:
             # 75+ çok güçlü
             # -----------------------------------
 
-            if goal_score >= 55:
+            if goal_score >= 20:
 
                 match_id = match["id"]
 
