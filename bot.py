@@ -26,8 +26,9 @@ HEADERS = {
 session = requests.Session()
 session.headers.update(HEADERS)
 
-match_states = {}
 stats_cache = {}
+signal_memory = {}
+
 cached_chat_id = None
 
 STATS_CACHE_SECONDS = 600
@@ -97,26 +98,24 @@ def to_number(text):
     if text is None:
         return None
 
-    text = str(text)
-
     text = (
-        text
+        str(text)
         .replace(",", ".")
         .replace("%", "")
         .strip()
     )
 
-    match = re.search(
+    m = re.search(
         r"-?\d+(?:\.\d+)?",
         text
     )
 
-    if not match:
+    if not m:
         return None
 
     try:
         return float(
-            match.group(0)
+            m.group(0)
         )
 
     except Exception:
@@ -164,9 +163,7 @@ def get_chat_id():
             []
         )
 
-        for item in reversed(
-            results
-        ):
+        for item in reversed(results):
             message = (
                 item.get("message")
                 or item.get(
@@ -283,9 +280,8 @@ def get_live_matches():
 
     live_rows = []
 
-    for i, line in enumerate(
-        lines
-    ):
+    for i, line in enumerate(lines):
+
         is_minute = bool(
             re.fullmatch(
                 r"\d{1,3}(?:\+\d+)?'",
@@ -310,6 +306,7 @@ def get_live_matches():
         for x in lines[
             i + 1:i + 9
         ]:
+
             if (
                 teams is None
                 and " - " in x
@@ -375,7 +372,9 @@ def get_live_matches():
     used_urls = set()
 
     for row in live_rows:
+
         for item in score_links:
+
             if (
                 item["url"]
                 in used_urls
@@ -393,6 +392,7 @@ def get_live_matches():
             found = False
 
             for _ in range(10):
+
                 if node is None:
                     break
 
@@ -455,7 +455,10 @@ def parse_stats_page(soup):
         if x.strip()
     ]
 
-    stats = empty_stats()
+    normalized = [
+        normalize_text(x)
+        for x in lines
+    ]
 
     aliases = {
         "gol beklentisi (xg)": "xg",
@@ -467,17 +470,13 @@ def parse_stats_page(soup):
         "korner": "corners",
     }
 
-    normalized = [
-        normalize_text(x)
-        for x in lines
-    ]
+    stats = empty_stats()
 
     for i, line in enumerate(
         normalized
     ):
-        key = aliases.get(
-            line
-        )
+
+        key = aliases.get(line)
 
         if not key:
             continue
@@ -489,42 +488,35 @@ def parse_stats_page(soup):
             1,
             4
         ):
-            left_index = (
-                i - distance
+            index = i - distance
+
+            if index < 0:
+                break
+
+            value = to_number(
+                lines[index]
             )
 
-            if left_index >= 0:
-                value = to_number(
-                    lines[
-                        left_index
-                    ]
-                )
-
-                if value is not None:
-                    left = value
-                    break
+            if value is not None:
+                left = value
+                break
 
         for distance in range(
             1,
             4
         ):
-            right_index = (
-                i + distance
+            index = i + distance
+
+            if index >= len(lines):
+                break
+
+            value = to_number(
+                lines[index]
             )
 
-            if (
-                right_index
-                < len(lines)
-            ):
-                value = to_number(
-                    lines[
-                        right_index
-                    ]
-                )
-
-                if value is not None:
-                    right = value
-                    break
+            if value is not None:
+                right = value
+                break
 
         if (
             left is not None
@@ -545,6 +537,7 @@ def merge_stats(
     result = empty_stats()
 
     for key in result:
+
         if (
             new_stats.get(key)
             is not None
@@ -584,6 +577,7 @@ def get_stats(match_url):
         1,
         4
     ):
+
         print(
             "ISTATISTIK DENEME:",
             attempt,
@@ -591,15 +585,12 @@ def get_stats(match_url):
         )
 
         for stats_url in stats_urls:
+
             try:
                 r = session.get(
                     stats_url,
                     timeout=25,
-                    headers={
-                        **HEADERS,
-                        "Cache-Control":
-                        "no-cache"
-                    }
+                    headers=HEADERS
                 )
 
                 r.raise_for_status()
@@ -628,21 +619,20 @@ def get_stats(match_url):
                     stats_cache[
                         match_url
                     ] = {
-                        "time":
-                        time.time(),
+                        "time": time.time(),
                         "stats":
                         best_stats.copy()
                     }
 
                     print(
-                        "ISTATISTIK ALINDI:",
-                        best_stats,
+                        "ISTATISTIK ALINDI",
                         flush=True
                     )
 
                     return best_stats
 
             except Exception as e:
+
                 print(
                     "ISTATISTIK HATASI:",
                     type(e).__name__,
@@ -658,6 +648,7 @@ def get_stats(match_url):
     )
 
     if cached:
+
         age = (
             time.time()
             - cached["time"]
@@ -720,44 +711,60 @@ def calculate_signal(stats):
     )
 
     if xg is not None:
+
         if xg >= 2.0:
             points += 30
+
         elif xg >= 1.3:
             points += 22
+
         elif xg >= 0.8:
             points += 14
+
         elif xg >= 0.4:
             points += 7
 
     if shots is not None:
+
         if shots >= 20:
             points += 25
+
         elif shots >= 14:
             points += 18
+
         elif shots >= 9:
             points += 10
 
     if sot is not None:
+
         if sot >= 8:
             points += 25
+
         elif sot >= 5:
             points += 18
+
         elif sot >= 3:
             points += 10
 
     if big is not None:
+
         if big >= 4:
             points += 15
+
         elif big >= 2:
             points += 10
+
         elif big >= 1:
             points += 5
 
     if corners is not None:
+
         if corners >= 10:
             points += 10
+
         elif corners >= 6:
             points += 6
+
         elif corners >= 3:
             points += 3
 
@@ -812,117 +819,153 @@ def level_text(level):
     return "BASKI YETERSIZ"
 
 
+def repeat_seconds(level):
+    if level == 3:
+        return 300
+
+    if level == 2:
+        return 480
+
+    if level == 1:
+        return 900
+
+    return 999999
+
+
+def should_send_signal(
+    match_url,
+    level
+):
+    now = time.time()
+
+    info = signal_memory.get(
+        match_url
+    )
+
+    if not info:
+        return True
+
+    old_level = info.get(
+        "level",
+        0
+    )
+
+    last_sent = info.get(
+        "last_sent",
+        0
+    )
+
+    if level > old_level:
+        return True
+
+    wait = repeat_seconds(
+        level
+    )
+
+    if (
+        now - last_sent
+        >= wait
+    ):
+        return True
+
+    return False
+
+
+def remember_signal(
+    match_url,
+    level
+):
+    signal_memory[
+        match_url
+    ] = {
+        "level": level,
+        "last_sent":
+        time.time()
+    }
+
+
+def reset_signal_if_low(
+    match_url,
+    level
+):
+    if level == 0:
+        signal_memory.pop(
+            match_url,
+            None
+        )
+
+
 def handle_signal(
     match,
     stats,
     points
 ):
-    key = match["url"]
-
-    current_level = (
-        get_level(points)
+    level = get_level(
+        points
     )
 
-    previous_level = (
-        match_states.get(
-            key,
-            0
+    reset_signal_if_low(
+        match["url"],
+        level
+    )
+
+    if level == 0:
+        print(
+            "BASKI YETERSIZ - "
+            "TELEGRAM YOK",
+            flush=True
         )
+        return
+
+    if not should_send_signal(
+        match["url"],
+        level
+    ):
+        print(
+            "TEKRAR SURESI "
+            "DOLMADI",
+            flush=True
+        )
+        return
+
+    message = (
+        f"{level_text(level)}"
+        "\n\n"
+        f"⚽ {match['teams']}\n"
+        f"⏱ Dakika: "
+        f"{match['minute']}\n"
+        f"📊 Skor: "
+        f"{match['score']}\n"
+        f"🎯 xG: "
+        f"{show(stats['xg'])}\n"
+        f"🥅 Sut: "
+        f"{show(stats['shots'])}\n"
+        f"🎯 Isabetli: "
+        f"{show(stats['sot'])}\n"
+        f"🔥 Buyuk sans: "
+        f"{show(stats['big'])}\n"
+        f"🚩 Korner: "
+        f"{show(stats['corners'])}\n"
+        f"📈 Gol puani: "
+        f"{points}/100"
     )
 
     print(
-        "SINYAL KONTROL:",
+        "TELEGRAM GONDERME "
+        "DENEMESI:",
         match["teams"],
-        "ESKI:",
-        previous_level,
-        "YENI:",
-        current_level,
-        "PUAN:",
-        points,
         flush=True
     )
 
-    if current_level == 0:
-        match_states[
-            key
-        ] = 0
-        return
+    success = send_telegram(
+        message
+    )
 
-    if (
-        current_level
-        == previous_level
-    ):
-        print(
-            "AYNI SEVIYE - "
-            "TEKRAR MESAJ YOK",
-            flush=True
+    if success:
+        remember_signal(
+            match["url"],
+            level
         )
-        return
-
-    if (
-        current_level
-        > previous_level
-        or previous_level == 0
-    ):
-        message = (
-            f"{level_text(current_level)}"
-            "\n\n"
-            f"⚽ {match['teams']}\n"
-            f"⏱ Dakika: "
-            f"{match['minute']}\n"
-            f"📊 Skor: "
-            f"{match['score']}\n"
-            f"🎯 xG: "
-            f"{show(stats['xg'])}\n"
-            f"🥅 Sut: "
-            f"{show(stats['shots'])}\n"
-            f"🎯 Isabetli: "
-            f"{show(stats['sot'])}\n"
-            f"🔥 Buyuk sans: "
-            f"{show(stats['big'])}\n"
-            f"🚩 Korner: "
-            f"{show(stats['corners'])}\n"
-            f"📈 Gol puani: "
-            f"{points}/100"
-        )
-
-        print(
-            "TELEGRAM GONDERME "
-            "DENEMESI:",
-            match["teams"],
-            flush=True
-        )
-
-        success = (
-            send_telegram(
-                message
-            )
-        )
-
-        if success:
-            match_states[
-                key
-            ] = current_level
-
-            print(
-                "SINYAL HAFIZAYA "
-                "ALINDI:",
-                current_level,
-                flush=True
-            )
-
-        else:
-            print(
-                "TELEGRAM GONDERILEMEDI "
-                "- SONRA TEKRAR "
-                "DENENECEK",
-                flush=True
-            )
-
-    else:
-        match_states[
-            key
-        ] = current_level
 
 
 def remove_finished_matches(
@@ -934,10 +977,11 @@ def remove_finished_matches(
     }
 
     for key in list(
-        match_states.keys()
+        signal_memory.keys()
     ):
+
         if key not in live_urls:
-            match_states.pop(
+            signal_memory.pop(
                 key,
                 None
             )
@@ -945,6 +989,7 @@ def remove_finished_matches(
     for key in list(
         stats_cache.keys()
     ):
+
         if key not in live_urls:
             stats_cache.pop(
                 key,
@@ -984,6 +1029,7 @@ def scan():
         )
 
         for match in matches:
+
             try:
                 stats = get_stats(
                     match["url"]
@@ -1011,7 +1057,8 @@ def scan():
                     )
 
                     print(
-                        "ISTATISTIK: VERI YOK",
+                        "ISTATISTIK: "
+                        "VERI YOK",
                         flush=True
                     )
 
@@ -1115,6 +1162,7 @@ def scan():
                 )
 
             except Exception as e:
+
                 print(
                     "MAC HATASI:",
                     match.get(
@@ -1127,6 +1175,7 @@ def scan():
                 )
 
     except Exception as e:
+
         print(
             "GENEL HATA:",
             type(e).__name__,
