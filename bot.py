@@ -482,6 +482,15 @@ if __name__ == "__main__":
             flush=True
         )
 
+        print(
+            "TELEGRAM BAGLANTI TESTI BASLIYOR",
+            flush=True
+        )
+
+        send_telegram(
+            "✅ Gol sinyal botu aktif!\nTelegram bağlantısı başarılı."
+        )
+
     while True:
         scan()
         time.sleep(60)
