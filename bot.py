@@ -62,11 +62,7 @@ last_scores = {}
 # Gol sonrası sinyal kilidinin biteceği zamanı tutar
 goal_cooldowns = {}
 
-
-# =========================================================
-# MAC ISTATISTIK GECMISI
-# =========================================================
-
+# Her maçın istatistik geçmişi
 match_history = {}
 
 
@@ -94,7 +90,10 @@ def number(value):
     value = value.replace("%", "")
     value = value.replace(",", ".")
 
-    m = re.search(r"-?\d+(?:\.\d+)?", value)
+    m = re.search(
+        r"-?\d+(?:\.\d+)?",
+        value
+    )
 
     if not m:
         return None
@@ -124,7 +123,10 @@ def parse_fields(block):
         if "÷" not in item:
             continue
 
-        key, value = item.split("÷", 1)
+        key, value = item.split(
+            "÷",
+            1
+        )
 
         key = key.lstrip("~").strip()
         value = value.strip()
@@ -202,7 +204,9 @@ def send_telegram(message):
 
 def calculate_minute(fields):
 
-    ba = clean(fields.get("BA"))
+    ba = clean(
+        fields.get("BA")
+    )
 
     if ba:
 
@@ -213,7 +217,9 @@ def calculate_minute(fields):
 
         if m:
 
-            minute = int(m.group())
+            minute = int(
+                m.group()
+            )
 
             if 1 <= minute <= 130:
                 return minute
@@ -258,7 +264,10 @@ def calculate_minute(fields):
             now_timestamp = time.time()
 
             elapsed = int(
-                (now_timestamp - start_timestamp)
+                (
+                    now_timestamp
+                    - start_timestamp
+                )
                 / 60
             )
 
@@ -282,7 +291,9 @@ def calculate_minute(fields):
                     45
                 )
 
-            calculated = elapsed - 15
+            calculated = (
+                elapsed - 15
+            )
 
             if calculated < 46:
                 calculated = 46
@@ -292,7 +303,8 @@ def calculate_minute(fields):
 
             if (
                 "half" in period_normal
-                and "time" in period_normal
+                and
+                "time" in period_normal
             ):
                 return 45
 
@@ -335,7 +347,9 @@ def get_live_matches():
 
     for block in raw.split("~"):
 
-        fields = parse_fields(block)
+        fields = parse_fields(
+            block
+        )
 
         match_id = clean(
             fields.get("AA")
@@ -387,6 +401,93 @@ def get_live_matches():
 
 
 # =========================================================
+# YENI:
+# SINYALDEN HEMEN ONCE SKORU TEKRAR KONTROL ET
+# =========================================================
+
+def get_fresh_match_state(match_id):
+
+    try:
+
+        response = session.get(
+            LIVE_FEED_URL,
+            params={
+                "_": int(
+                    time.time() * 1000
+                )
+            },
+            headers={
+                **HEADERS,
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            },
+            timeout=20
+        )
+
+        print(
+            "SON KONTROL HTTP:",
+            response.status_code,
+            flush=True
+        )
+
+        if response.status_code != 200:
+            return None
+
+        raw = response.text
+
+        for block in raw.split("~"):
+
+            fields = parse_fields(
+                block
+            )
+
+            current_id = clean(
+                fields.get("AA")
+            )
+
+            if current_id != match_id:
+                continue
+
+            status = clean(
+                fields.get("AB")
+            )
+
+            if status != "2":
+                return {
+                    "live": False
+                }
+
+            return {
+                "live": True,
+
+                "home_score": int_value(
+                    fields.get("AG")
+                ),
+
+                "away_score": int_value(
+                    fields.get("AH")
+                ),
+
+                "minute": calculate_minute(
+                    fields
+                )
+            }
+
+        return None
+
+    except Exception as e:
+
+        print(
+            "SON KONTROL HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        return None
+
+
+# =========================================================
 # İSTATİSTİK
 # =========================================================
 
@@ -427,6 +528,7 @@ def normalize_name(text):
     }
 
     for old, new in replacements.items():
+
         text = text.replace(
             old,
             new
@@ -441,7 +543,9 @@ def normalize_name(text):
 
 def stat_kind(name):
 
-    name = normalize_name(name)
+    name = normalize_name(
+        name
+    )
 
     if (
         "expected goals" in name
@@ -594,8 +698,13 @@ def get_stats(match_id):
                 1
             )
 
-            key = key.lstrip("~").strip()
-            value = clean(value)
+            key = key.lstrip(
+                "~"
+            ).strip()
+
+            value = clean(
+                value
+            )
 
             if key == "SG":
 
@@ -633,7 +742,11 @@ def get_stats(match_id):
 # SON 5-10 DAKIKA BASKI TAKIBI
 # =========================================================
 
-def stat_total(stats, home_key, away_key):
+def stat_total(
+    stats,
+    home_key,
+    away_key
+):
 
     return (
         (stats.get(home_key) or 0)
@@ -652,7 +765,9 @@ def calculate_recent_pressure(
 
     current = {
         "time": now,
-        "minute": match["minute"],
+
+        "minute":
+            match["minute"],
 
         "xg": stat_total(
             stats,
@@ -709,15 +824,22 @@ def calculate_recent_pressure(
         baseline = min(
             candidates,
             key=lambda item: abs(
-                (now - item["time"]) - 600
+                (
+                    now
+                    - item["time"]
+                )
+                - 600
             )
         )
 
-    history.append(current)
+    history.append(
+        current
+    )
 
     if baseline is None:
 
         return 0, None
+
 
     delta_xg = max(
         0,
@@ -749,13 +871,11 @@ def calculate_recent_pressure(
         - baseline["corners"]
     )
 
+
     pressure = 0
 
 
-    # =====================================================
-    # GUCLENDIRILMIS xG ARTISI
-    # =====================================================
-
+    # xG
     if delta_xg >= 0.70:
         pressure += 12
 
@@ -772,10 +892,7 @@ def calculate_recent_pressure(
         pressure += 3
 
 
-    # =====================================================
-    # GUCLENDIRILMIS SUT ARTISI
-    # =====================================================
-
+    # Şut
     if delta_shots >= 7:
         pressure += 11
 
@@ -792,10 +909,7 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # =====================================================
-    # GUCLENDIRILMIS ISABETLI SUT ARTISI
-    # =====================================================
-
+    # İsabetli şut
     if delta_sot >= 4:
         pressure += 13
 
@@ -809,10 +923,7 @@ def calculate_recent_pressure(
         pressure += 4
 
 
-    # =====================================================
-    # BUYUK SANS
-    # =====================================================
-
+    # Büyük şans
     if delta_big >= 2:
         pressure += 7
 
@@ -820,10 +931,7 @@ def calculate_recent_pressure(
         pressure += 4
 
 
-    # =====================================================
-    # KORNER
-    # =====================================================
-
+    # Korner
     if delta_corners >= 4:
         pressure += 4
 
@@ -834,10 +942,7 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # =====================================================
-    # GUCLENDIRILMIS ANI BASKI KOMBINASYONLARI
-    # =====================================================
-
+    # Kombinasyonlar
     if (
         delta_shots >= 4
         and delta_sot >= 2
@@ -856,10 +961,6 @@ def calculate_recent_pressure(
     ):
         pressure += 4
 
-
-    # =====================================================
-    # BASKI BONUSU MAKSIMUM 40
-    # =====================================================
 
     pressure = min(
         pressure,
@@ -914,6 +1015,7 @@ def calculate_goal_score(
     if minute <= 0:
         return 0
 
+
     xg = (
         (stats["xg_home"] or 0)
         +
@@ -944,13 +1046,11 @@ def calculate_goal_score(
         (stats["corners_away"] or 0)
     )
 
+
     score = 0
 
 
-    # =====================================================
     # xG
-    # =====================================================
-
     if xg >= 3.0:
         score += 30
 
@@ -973,10 +1073,7 @@ def calculate_goal_score(
         score += 5
 
 
-    # =====================================================
-    # ISABETLI SUT
-    # =====================================================
-
+    # İsabetli şut
     if sot >= 10:
         score += 25
 
@@ -996,10 +1093,7 @@ def calculate_goal_score(
         score += 6
 
 
-    # =====================================================
-    # SUT
-    # =====================================================
-
+    # Şut
     if shots >= 25:
         score += 18
 
@@ -1019,10 +1113,7 @@ def calculate_goal_score(
         score += 3
 
 
-    # =====================================================
-    # BUYUK SANS
-    # =====================================================
-
+    # Büyük şans
     if big >= 5:
         score += 15
 
@@ -1039,10 +1130,7 @@ def calculate_goal_score(
         score += 4
 
 
-    # =====================================================
-    # KORNER
-    # =====================================================
-
+    # Korner
     if corners >= 12:
         score += 7
 
@@ -1056,10 +1144,7 @@ def calculate_goal_score(
         score += 2
 
 
-    # =====================================================
-    # DAKIKA
-    # =====================================================
-
+    # Dakika
     if minute >= 86:
         score += 10
 
@@ -1079,10 +1164,7 @@ def calculate_goal_score(
         score += 2
 
 
-    # =====================================================
-    # DUSUK SKOR BONUSU
-    # =====================================================
-
+    # Düşük skor bonusu
     total_goals = (
         match["home_score"]
         +
@@ -1102,10 +1184,7 @@ def calculate_goal_score(
         score += 3
 
 
-    # =====================================================
-    # GUCLU BASKI KOMBINASYONLARI
-    # =====================================================
-
+    # Güçlü baskı kombinasyonları
     if (
         xg >= 1.5
         and sot >= 5
@@ -1120,7 +1199,6 @@ def calculate_goal_score(
         score += 3
 
 
-    # Son 5-10 dakika baskı bonusu
     score += recent_pressure
 
 
@@ -1140,10 +1218,15 @@ def display_value(value):
         return "VERI YOK"
 
     if float(value).is_integer():
-        return str(int(value))
+        return str(
+            int(value)
+        )
 
     return str(
-        round(value, 2)
+        round(
+            value,
+            2
+        )
     )
 
 
@@ -1164,6 +1247,7 @@ def make_signal_message(
         title = (
             "🟢 GUCLU GOL SINYALI"
         )
+
 
     return (
         f"{title}\n\n"
@@ -1216,6 +1300,7 @@ print(
     flush=True
 )
 
+
 while True:
 
     try:
@@ -1229,6 +1314,7 @@ while True:
         )
 
         active_match_ids = set()
+
 
         for match in matches:
 
@@ -1335,7 +1421,9 @@ while True:
 
             print(
                 "DAKIKA:",
-                str(match["minute"]) + "'",
+                str(
+                    match["minute"]
+                ) + "'",
                 flush=True
             )
 
@@ -1505,7 +1593,8 @@ while True:
 
             print(
                 "GOL PUANI:",
-                str(goal_score) + "/100",
+                str(goal_score)
+                + "/100",
                 flush=True
             )
 
@@ -1551,14 +1640,6 @@ while True:
 
             # =================================================
             # SINYAL KURALLARI
-            #
-            # 55+ GUCLU
-            # 75+ COK GUCLU
-            #
-            # 15-38
-            # 55-85
-            #
-            # GOL SONRASI 5 DK SINYAL YOK
             # =================================================
 
             valid_signal_minute = (
@@ -1600,7 +1681,6 @@ while True:
                     ]
 
 
-                    # 15 dakika geçtiyse tekrar sinyal
                     if (
                         match["minute"]
                         - last_minute
@@ -1609,7 +1689,6 @@ while True:
                         should_send = True
 
 
-                    # Güçlüden çok güçlüye çıktıysa
                     if (
                         last_score < 75
                         and goal_score >= 75
@@ -1617,7 +1696,6 @@ while True:
                         should_send = True
 
 
-                    # Gol puanı en az 15 yükseldiyse
                     if (
                         goal_score
                         >= last_score + 15
@@ -1627,35 +1705,234 @@ while True:
 
                 if should_send:
 
-                    message = (
-                        make_signal_message(
-                            match,
-                            stats,
-                            goal_score
-                        )
+                    # =========================================
+                    # YENI:
+                    # TELEGRAMDAN HEMEN ONCE SKOR TEKRAR BAK
+                    # =========================================
+
+                    print(
+                        "SINYAL ONCESI "
+                        "SKOR TEKRAR KONTROL EDILIYOR...",
+                        flush=True
                     )
 
-                    sent = send_telegram(
-                        message
+                    fresh = get_fresh_match_state(
+                        match_id
                     )
 
 
-                    if sent:
-
-                        sent_signals[
-                            match_id
-                        ] = {
-                            "minute":
-                                match["minute"],
-
-                            "score":
-                                goal_score
-                        }
+                    if fresh is None:
 
                         print(
-                            "SINYAL TELEGRAMA GONDERILDI",
+                            "SINYAL IPTAL: "
+                            "SON SKOR DOGRULANAMADI",
                             flush=True
                         )
+
+                    elif not fresh.get(
+                        "live",
+                        False
+                    ):
+
+                        print(
+                            "SINYAL IPTAL: "
+                            "MAC ARTIK CANLI DEGIL",
+                            flush=True
+                        )
+
+                    else:
+
+                        old_score = (
+                            match["home_score"],
+                            match["away_score"]
+                        )
+
+                        fresh_score = (
+                            fresh["home_score"],
+                            fresh["away_score"]
+                        )
+
+                        old_total = (
+                            old_score[0]
+                            +
+                            old_score[1]
+                        )
+
+                        fresh_total = (
+                            fresh_score[0]
+                            +
+                            fresh_score[1]
+                        )
+
+
+                        # =====================================
+                        # SON KONTROLDE GOL GORULDU
+                        # =====================================
+
+                        if fresh_total > old_total:
+
+                            print(
+                                "SINYAL IPTAL: "
+                                "SON KONTROLDE GOL ALGILANDI",
+                                old_score,
+                                "->",
+                                fresh_score,
+                                flush=True
+                            )
+
+                            goal_cooldowns[
+                                match_id
+                            ] = (
+                                time.time()
+                                +
+                                GOAL_COOLDOWN_SECONDS
+                            )
+
+                            match_history.pop(
+                                match_id,
+                                None
+                            )
+
+                            sent_signals.pop(
+                                match_id,
+                                None
+                            )
+
+                            last_scores[
+                                match_id
+                            ] = fresh_score
+
+
+                        # =====================================
+                        # SKOR DEGISMIS AMA GOL ARTISI YOK
+                        # =====================================
+
+                        elif fresh_score != old_score:
+
+                            print(
+                                "SINYAL IPTAL: "
+                                "SKOR DOGRULAMASI DEGISTI",
+                                old_score,
+                                "->",
+                                fresh_score,
+                                flush=True
+                            )
+
+                            last_scores[
+                                match_id
+                            ] = fresh_score
+
+
+                        else:
+
+                            # Güncel dakikayı kullan
+                            fresh_minute = fresh[
+                                "minute"
+                            ]
+
+                            fresh_valid_minute = (
+                                15 <= fresh_minute <= 38
+                                or
+                                55 <= fresh_minute <= 85
+                            )
+
+
+                            if not fresh_valid_minute:
+
+                                print(
+                                    "SINYAL IPTAL: "
+                                    "GUNCEL DAKIKA "
+                                    "SINYAL ARALIGI DISINDA",
+                                    fresh_minute,
+                                    flush=True
+                                )
+
+                            else:
+
+                                # Mesajda güncel dakika görünsün
+                                match[
+                                    "minute"
+                                ] = fresh_minute
+
+                                match[
+                                    "home_score"
+                                ] = fresh[
+                                    "home_score"
+                                ]
+
+                                match[
+                                    "away_score"
+                                ] = fresh[
+                                    "away_score"
+                                ]
+
+
+                                # Güncel dakika/skorla puanı
+                                # tekrar hesapla
+                                goal_score = (
+                                    calculate_goal_score(
+                                        match,
+                                        stats,
+                                        recent_pressure
+                                    )
+                                )
+
+
+                                if goal_score < 55:
+
+                                    print(
+                                        "SINYAL IPTAL: "
+                                        "SON KONTROL PUANI "
+                                        "55 ALTINA DUSTU",
+                                        goal_score,
+                                        flush=True
+                                    )
+
+                                else:
+
+                                    message = (
+                                        make_signal_message(
+                                            match,
+                                            stats,
+                                            goal_score
+                                        )
+                                    )
+
+                                    sent = send_telegram(
+                                        message
+                                    )
+
+
+                                    if sent:
+
+                                        sent_signals[
+                                            match_id
+                                        ] = {
+                                            "minute":
+                                                match[
+                                                    "minute"
+                                                ],
+
+                                            "score":
+                                                goal_score
+                                        }
+
+                                        last_scores[
+                                            match_id
+                                        ] = (
+                                            match[
+                                                "home_score"
+                                            ],
+                                            match[
+                                                "away_score"
+                                            ]
+                                        )
+
+                                        print(
+                                            "SINYAL TELEGRAMA "
+                                            "GONDERILDI",
+                                            flush=True
+                                        )
 
 
             time.sleep(1)
