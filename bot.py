@@ -11,14 +11,17 @@ import requests
 
 POLL_SECONDS = 60
 
-# Artik 68 altinda sinyal yok
+# Sinyal alt siniri
 SIGNAL_THRESHOLD = 68
 
-# Aday sinyal kac saniye doğrulanacak
+# Aday sinyal doğrulama suresi
 SIGNAL_CONFIRM_SECONDS = 60
 
-# Gol olduktan sonra kac saniye sinyal gonderilmeyecek
+# Gol sonrasi kilit
 GOAL_COOLDOWN_SECONDS = 300
+
+# Son 5 dakika tempo icin minimum puan
+TEMPO_MIN_SCORE = 4
 
 
 LIVE_FEED_URL = (
@@ -58,7 +61,6 @@ BOT_TOKEN = (
     or os.getenv("TOKEN")
 )
 
-
 CHAT_ID = (
     os.getenv("TELEGRAM_CHAT_ID")
     or os.getenv("CHAT_ID")
@@ -74,7 +76,7 @@ last_scores = {}
 # Gol sonrasi kilit
 goal_cooldowns = {}
 
-# Son 5-10 dakika istatistik gecmisi
+# Mac istatistik gecmisi
 match_history = {}
 
 # 60 saniye bekleyen aday sinyaller
@@ -152,12 +154,29 @@ def parse_fields(block):
     return result
 
 
+# =========================================================
+# DAKIKA ARALIKLARI
+# =========================================================
+
 def is_valid_signal_minute(minute):
 
     return (
         15 <= minute <= 38
         or
         55 <= minute <= 85
+    )
+
+
+def is_tracking_minute(minute):
+
+    # Sinyalden 5 dakika once istatistik gecmisi toplamaya basla.
+    # Boylece 15 veya 55. dakikada eski mac geneli degil,
+    # son 5 dakika hareketi kontrol edilebilir.
+
+    return (
+        10 <= minute <= 38
+        or
+        50 <= minute <= 85
     )
 
 
@@ -800,7 +819,7 @@ def get_stats(match_id):
 
 
 # =========================================================
-# SON 5-10 DAKIKA BASKI TAKIBI
+# ISTATISTIK YARDIMCILARI
 # =========================================================
 
 def stat_total(
@@ -816,17 +835,13 @@ def stat_total(
     )
 
 
-def calculate_recent_pressure(
+def make_history_snapshot(
     match,
     stats
 ):
 
-    match_id = match["id"]
-    now = time.time()
-
-
-    current = {
-        "time": now,
+    return {
+        "time": time.time(),
 
         "minute":
             match["minute"],
@@ -863,11 +878,60 @@ def calculate_recent_pressure(
     }
 
 
+def find_history_baseline(
+    history,
+    now,
+    minimum_age,
+    maximum_age,
+    target_age
+):
+
+    candidates = [
+        item
+        for item in history
+        if (
+            minimum_age
+            <= now - item["time"]
+            <= maximum_age
+        )
+    ]
+
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda item: abs(
+            (
+                now
+                - item["time"]
+            )
+            - target_age
+        )
+    )
+
+
+# =========================================================
+# SON 5-10 DAKIKA BASKI TAKIBI
+# =========================================================
+
+def calculate_recent_pressure(
+    match,
+    stats
+):
+
+    match_id = match["id"]
+    now = time.time()
+
+    current = make_history_snapshot(
+        match,
+        stats
+    )
+
     history = match_history.setdefault(
         match_id,
         []
     )
-
 
     history[:] = [
         item
@@ -875,35 +939,18 @@ def calculate_recent_pressure(
         if now - item["time"] <= 1200
     ]
 
-
-    baseline = None
-
-
-    candidates = [
-        item
-        for item in history
-        if 300 <= now - item["time"] <= 900
-    ]
-
-
-    if candidates:
-
-        baseline = min(
-            candidates,
-            key=lambda item: abs(
-                (
-                    now
-                    - item["time"]
-                )
-                - 600
-            )
-        )
-
+    # Genel baski bonusu icin yaklasik 5-10 dakika geriye bak.
+    baseline = find_history_baseline(
+        history,
+        now,
+        300,
+        900,
+        600
+    )
 
     history.append(
         current
     )
-
 
     if baseline is None:
         return 0, None
@@ -1010,20 +1057,18 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # Kombinasyon
+    # Kombinasyonlar
     if (
         delta_shots >= 4
         and delta_sot >= 2
     ):
         pressure += 5
 
-
     if (
         delta_xg >= 0.35
         and delta_sot >= 2
     ):
         pressure += 5
-
 
     if (
         delta_big >= 1
@@ -1069,6 +1114,406 @@ def calculate_recent_pressure(
 
 
     return pressure, details
+
+
+# =========================================================
+# YENI: SON 5 DAKIKA TEMPO KONTROLU
+# =========================================================
+
+def calculate_tempo_state(match_id):
+
+    history = match_history.get(
+        match_id,
+        []
+    )
+
+    if len(history) < 2:
+
+        return {
+            "ready": False,
+            "ok": False,
+            "dropped": False,
+            "score": 0,
+            "details": None
+        }
+
+
+    current = history[-1]
+    now = current["time"]
+
+
+    # Yaklasik 5 dakika onceki veri
+    short_baseline = find_history_baseline(
+        history[:-1],
+        now,
+        180,
+        420,
+        300
+    )
+
+
+    if short_baseline is None:
+
+        return {
+            "ready": False,
+            "ok": False,
+            "dropped": False,
+            "score": 0,
+            "details": None
+        }
+
+
+    # Son yaklasik 5 dakika
+    recent_xg = max(
+        0,
+        current["xg"]
+        - short_baseline["xg"]
+    )
+
+    recent_shots = max(
+        0,
+        current["shots"]
+        - short_baseline["shots"]
+    )
+
+    recent_sot = max(
+        0,
+        current["sot"]
+        - short_baseline["sot"]
+    )
+
+    recent_big = max(
+        0,
+        current["big"]
+        - short_baseline["big"]
+    )
+
+    recent_corners = max(
+        0,
+        current["corners"]
+        - short_baseline["corners"]
+    )
+
+
+    tempo_score = 0
+
+
+    # Son 5 dk xG
+    if recent_xg >= 0.35:
+        tempo_score += 3
+
+    elif recent_xg >= 0.20:
+        tempo_score += 2
+
+    elif recent_xg >= 0.10:
+        tempo_score += 1
+
+
+    # Son 5 dk sut
+    if recent_shots >= 4:
+        tempo_score += 3
+
+    elif recent_shots >= 3:
+        tempo_score += 2
+
+    elif recent_shots >= 2:
+        tempo_score += 1
+
+
+    # Son 5 dk isabetli
+    if recent_sot >= 2:
+        tempo_score += 3
+
+    elif recent_sot >= 1:
+        tempo_score += 2
+
+
+    # Son 5 dk buyuk sans
+    if recent_big >= 1:
+        tempo_score += 2
+
+
+    # Son 5 dk korner
+    if recent_corners >= 3:
+        tempo_score += 2
+
+    elif recent_corners >= 2:
+        tempo_score += 1
+
+
+    # =====================================================
+    # MAC TAMAMEN DURMUS MU?
+    # =====================================================
+
+    dead_tempo = (
+        recent_xg < 0.08
+        and recent_shots < 2
+        and recent_sot < 1
+        and recent_big < 1
+        and recent_corners < 2
+    )
+
+
+    # =====================================================
+    # ONCEKI 5 DAKIKAYA GORE TEMPO DUSTU MU?
+    # =====================================================
+
+    previous_baseline = find_history_baseline(
+        history[:-1],
+        now,
+        480,
+        720,
+        600
+    )
+
+
+    tempo_dropped = False
+    previous_intensity = None
+    recent_intensity = None
+
+
+    # Aktiviteyi tek sayida karsilastirmak icin agirlikli tempo
+    recent_intensity = (
+        (recent_xg * 10)
+        +
+        (recent_shots * 1.2)
+        +
+        (recent_sot * 2.5)
+        +
+        (recent_big * 3.0)
+        +
+        (recent_corners * 0.7)
+    )
+
+
+    if previous_baseline is not None:
+
+        previous_xg = max(
+            0,
+            short_baseline["xg"]
+            - previous_baseline["xg"]
+        )
+
+        previous_shots = max(
+            0,
+            short_baseline["shots"]
+            - previous_baseline["shots"]
+        )
+
+        previous_sot = max(
+            0,
+            short_baseline["sot"]
+            - previous_baseline["sot"]
+        )
+
+        previous_big = max(
+            0,
+            short_baseline["big"]
+            - previous_baseline["big"]
+        )
+
+        previous_corners = max(
+            0,
+            short_baseline["corners"]
+            - previous_baseline["corners"]
+        )
+
+
+        previous_intensity = (
+            (previous_xg * 10)
+            +
+            (previous_shots * 1.2)
+            +
+            (previous_sot * 2.5)
+            +
+            (previous_big * 3.0)
+            +
+            (previous_corners * 0.7)
+        )
+
+
+        # Onceki 5 dakika hareketliydi,
+        # simdiki 5 dakika aktivitesi %45'in altina dustuyse
+        # tempo dususu kabul edilir.
+
+        if (
+            previous_intensity >= 4.0
+            and
+            recent_intensity
+            <
+            previous_intensity * 0.45
+        ):
+            tempo_dropped = True
+
+
+    tempo_ok = (
+        tempo_score >= TEMPO_MIN_SCORE
+        and not dead_tempo
+        and not tempo_dropped
+    )
+
+
+    details = {
+        "minutes": max(
+            1,
+            current["minute"]
+            - short_baseline["minute"]
+        ),
+
+        "xg": round(
+            recent_xg,
+            2
+        ),
+
+        "shots": int(
+            recent_shots
+        ),
+
+        "sot": int(
+            recent_sot
+        ),
+
+        "big": int(
+            recent_big
+        ),
+
+        "corners": int(
+            recent_corners
+        ),
+
+        "tempo_score": tempo_score,
+
+        "dead": dead_tempo,
+
+        "dropped": tempo_dropped,
+
+        "recent_intensity": round(
+            recent_intensity,
+            2
+        ),
+
+        "previous_intensity": (
+            round(
+                previous_intensity,
+                2
+            )
+            if previous_intensity is not None
+            else None
+        )
+    }
+
+
+    return {
+        "ready": True,
+        "ok": tempo_ok,
+        "dropped": tempo_dropped,
+        "score": tempo_score,
+        "details": details
+    }
+
+
+# =========================================================
+# TEMPO LOGU
+# =========================================================
+
+def print_tempo(tempo):
+
+    if not tempo["ready"]:
+
+        print(
+            "TEMPO GECMISI TOPLANIYOR...",
+            flush=True
+        )
+
+        return
+
+
+    d = tempo["details"]
+
+
+    print(
+        "SON TEMPO:",
+        str(d["minutes"]) + " DK",
+        flush=True
+    )
+
+    print(
+        "TEMPO xG:",
+        "+" + str(d["xg"]),
+        flush=True
+    )
+
+    print(
+        "TEMPO SUT:",
+        "+" + str(d["shots"]),
+        flush=True
+    )
+
+    print(
+        "TEMPO ISABETLI:",
+        "+" + str(d["sot"]),
+        flush=True
+    )
+
+    print(
+        "TEMPO BUYUK SANS:",
+        "+" + str(d["big"]),
+        flush=True
+    )
+
+    print(
+        "TEMPO KORNER:",
+        "+" + str(d["corners"]),
+        flush=True
+    )
+
+    print(
+        "TEMPO PUANI:",
+        str(d["tempo_score"]),
+        "/",
+        TEMPO_MIN_SCORE,
+        flush=True
+    )
+
+
+    if d["previous_intensity"] is not None:
+
+        print(
+            "TEMPO SIDDET:",
+            d["previous_intensity"],
+            "->",
+            d["recent_intensity"],
+            flush=True
+        )
+
+
+    if d["dead"]:
+
+        print(
+            "TEMPO DURDU",
+            flush=True
+        )
+
+    elif d["dropped"]:
+
+        print(
+            "TEMPO DUSTU",
+            flush=True
+        )
+
+    elif tempo["ok"]:
+
+        print(
+            "TEMPO AKTIF",
+            flush=True
+        )
+
+    else:
+
+        print(
+            "TEMPO YETERSIZ",
+            flush=True
+        )
 
 
 # =========================================================
@@ -1371,6 +1816,18 @@ print(
 )
 
 print(
+    "TEMPO FILTRESI:",
+    "AKTIF",
+    flush=True
+)
+
+print(
+    "TEMPO ALT SINIRI:",
+    TEMPO_MIN_SCORE,
+    flush=True
+)
+
+print(
     "TELEGRAM TOKEN:",
     "VAR"
     if BOT_TOKEN
@@ -1517,10 +1974,10 @@ while True:
 
 
             # =================================================
-            # SINYAL DAKIKASI DISINDA ISTATISTIK CEKME
+            # ISTATISTIK TAKIP ARALIGI
             # =================================================
 
-            if not is_valid_signal_minute(
+            if not is_tracking_minute(
                 match["minute"]
             ):
 
@@ -1528,7 +1985,7 @@ while True:
 
                     print(
                         "ADAY SINYAL IPTAL: "
-                        "DAKIKA ARALIGI DISINA CIKTI",
+                        "TAKIP ARALIGI DISINA CIKTI",
                         match["home"],
                         "-",
                         match["away"],
@@ -1630,7 +2087,7 @@ while True:
 
 
             # =================================================
-            # SON DONEM BASKISI
+            # BASKI GECMISI
             # =================================================
 
             recent_pressure, pressure_details = (
@@ -1726,6 +2183,39 @@ while True:
                 )
 
 
+            # =================================================
+            # TEMPO
+            # =================================================
+
+            tempo = calculate_tempo_state(
+                match_id
+            )
+
+            print_tempo(
+                tempo
+            )
+
+
+            # 10-14 ve 50-54 sadece gecmis toplama bolgesi.
+            # Bu dakikalarda Telegram sinyali yok.
+
+            if not is_valid_signal_minute(
+                match["minute"]
+            ):
+
+                print(
+                    "ISTATISTIK GECMISI TOPLANIYOR. "
+                    "SINYAL DAKIKASI HENUZ BASLAMADI.",
+                    flush=True
+                )
+
+                continue
+
+
+            # =================================================
+            # GOL PUANI
+            # =================================================
+
             goal_score = calculate_goal_score(
                 match,
                 stats,
@@ -1780,11 +2270,16 @@ while True:
                     flush=True
                 )
 
-
                 pending_signals.pop(
                     match_id,
                     None
                 )
+
+                continue
+
+
+            if goal_just_happened:
+                continue
 
 
             # =================================================
@@ -1810,11 +2305,53 @@ while True:
                 continue
 
 
-            if in_goal_cooldown:
+            # =================================================
+            # TEMPO GECMISI HAZIR MI?
+            # =================================================
+
+            if not tempo["ready"]:
+
+                print(
+                    "SINYAL YOK: "
+                    "SON 5 DK TEMPO GECMISI HENUZ YETERSIZ",
+                    flush=True
+                )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
                 continue
 
 
-            if goal_just_happened:
+            # =================================================
+            # TEMPO AKTIF MI?
+            # =================================================
+
+            if not tempo["ok"]:
+
+                if tempo["dropped"]:
+
+                    print(
+                        "SINYAL YOK: "
+                        "TEMPO DUSTU",
+                        flush=True
+                    )
+
+                else:
+
+                    print(
+                        "SINYAL YOK: "
+                        "SON 5 DK TEMPO YETERSIZ",
+                        flush=True
+                    )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
                 continue
 
 
@@ -1878,7 +2415,7 @@ while True:
 
 
             # =================================================
-            # 60 SANIYELIK ADAY SINYAL SISTEMI
+            # 60 SANIYELIK ADAY SINYAL
             # =================================================
 
             pending = pending_signals.get(
@@ -1901,7 +2438,10 @@ while True:
                         match["minute"],
 
                     "goal_score":
-                        goal_score
+                        goal_score,
+
+                    "tempo_score":
+                        tempo["score"]
                 }
 
 
@@ -1912,6 +2452,8 @@ while True:
                     match["away"],
                     "| PUAN:",
                     goal_score,
+                    "| TEMPO:",
+                    tempo["score"],
                     "| SKOR:",
                     f"{current_score[0]}-"
                     f"{current_score[1]}",
@@ -1922,7 +2464,8 @@ while True:
                 print(
                     "TELEGRAMA HEMEN GONDERILMEYECEK.",
                     SIGNAL_CONFIRM_SECONDS,
-                    "SANIYE SKOR DOGRULAMASI BEKLENIYOR.",
+                    "SANIYE SKOR VE TEMPO "
+                    "DOGRULAMASI BEKLENIYOR.",
                     flush=True
                 )
 
@@ -1930,7 +2473,7 @@ while True:
 
 
             # =================================================
-            # ADAY OLUSTUKTAN SONRA SKOR DEGISTI MI?
+            # BEKLERKEN SKOR DEGISTI MI?
             # =================================================
 
             pending_score = pending[
@@ -2038,12 +2581,13 @@ while True:
 
 
             # =================================================
-            # 60 SN SONRA SON SKOR KONTROLU
+            # SON SKOR KONTROLU
             # =================================================
 
             print(
                 "60 SN DOLDU. "
-                "SKOR SON KEZ KONTROL EDILIYOR...",
+                "SKOR VE TEMPO SON KEZ "
+                "KONTROL EDILIYOR...",
                 flush=True
             )
 
@@ -2190,7 +2734,7 @@ while True:
 
 
             # =================================================
-            # GUNCEL DAKIKA KONTROLU
+            # GUNCEL DAKIKA
             # =================================================
 
             fresh_minute = fresh[
@@ -2204,8 +2748,8 @@ while True:
 
                 print(
                     "SINYAL IPTAL: "
-                    "GUNCEL DAKIKA "
-                    "SINYAL ARALIGI DISINDA:",
+                    "GUNCEL DAKIKA SINYAL "
+                    "ARALIGI DISINDA:",
                     fresh_minute,
                     flush=True
                 )
@@ -2221,7 +2765,7 @@ while True:
 
 
             # =================================================
-            # ISTATISTIGI DE SON KEZ YENILE
+            # ISTATISTIGI SON KEZ YENILE
             # =================================================
 
             print(
@@ -2254,12 +2798,88 @@ while True:
             ]
 
 
-            # Son gelen istatistiklerle puani yeniden hesapla
+            # =================================================
+            # YENI VERIYLE BASKIYI TEKRAR HESAPLA
+            # =================================================
+
+            final_recent_pressure, final_pressure_details = (
+                calculate_recent_pressure(
+                    match,
+                    fresh_stats
+                )
+            )
+
+
+            # =================================================
+            # YENI VERIYLE TEMPOYU TEKRAR HESAPLA
+            # =================================================
+
+            final_tempo = calculate_tempo_state(
+                match_id
+            )
+
+
+            print(
+                "SON TEMPO DOGRULAMASI:",
+                flush=True
+            )
+
+            print_tempo(
+                final_tempo
+            )
+
+
+            if not final_tempo["ready"]:
+
+                print(
+                    "SINYAL IPTAL: "
+                    "SON TEMPO DOGRULANAMADI",
+                    flush=True
+                )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+                continue
+
+
+            if not final_tempo["ok"]:
+
+                if final_tempo["dropped"]:
+
+                    print(
+                        "SINYAL IPTAL: "
+                        "60 SN SONUNDA TEMPO DUSTU",
+                        flush=True
+                    )
+
+                else:
+
+                    print(
+                        "SINYAL IPTAL: "
+                        "60 SN SONUNDA TEMPO YETERSIZ",
+                        flush=True
+                    )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+                continue
+
+
+            # =================================================
+            # PUANI YENI ISTATISTIK + YENI BASKIYLA HESAPLA
+            # =================================================
+
             final_goal_score = (
                 calculate_goal_score(
                     match,
                     fresh_stats,
-                    recent_pressure
+                    final_recent_pressure
                 )
             )
 
