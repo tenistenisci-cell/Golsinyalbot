@@ -1,7 +1,6 @@
 import os
 import re
 import time
-from datetime import datetime, timezone
 
 import requests
 
@@ -12,8 +11,15 @@ import requests
 
 POLL_SECONDS = 60
 
-# Gol olduktan sonra kaç saniye sinyal gönderilmeyecek
+# Artik 68 altinda sinyal yok
+SIGNAL_THRESHOLD = 68
+
+# Aday sinyal kac saniye doğrulanacak
+SIGNAL_CONFIRM_SECONDS = 60
+
+# Gol olduktan sonra kac saniye sinyal gonderilmeyecek
 GOAL_COOLDOWN_SECONDS = 300
+
 
 LIVE_FEED_URL = (
     "https://local-global.flashscore.ninja/"
@@ -24,6 +30,7 @@ STAT_BASE_URL = (
     "https://local-global.flashscore.ninja/"
     "2/x/feed/df_st_1_"
 )
+
 
 HEADERS = {
     "User-Agent": (
@@ -40,8 +47,10 @@ HEADERS = {
     "Cache-Control": "no-cache",
 }
 
+
 session = requests.Session()
 session.headers.update(HEADERS)
+
 
 BOT_TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN")
@@ -49,21 +58,27 @@ BOT_TOKEN = (
     or os.getenv("TOKEN")
 )
 
+
 CHAT_ID = (
     os.getenv("TELEGRAM_CHAT_ID")
     or os.getenv("CHAT_ID")
 )
 
+
+# Daha once gonderilen sinyaller
 sent_signals = {}
 
-# Her maçın önceki skorunu tutar
+# Maclarin son bilinen skoru
 last_scores = {}
 
-# Gol sonrası sinyal kilidinin biteceği zamanı tutar
+# Gol sonrasi kilit
 goal_cooldowns = {}
 
-# Her maçın istatistik geçmişi
+# Son 5-10 dakika istatistik gecmisi
 match_history = {}
+
+# 60 saniye bekleyen aday sinyaller
+pending_signals = {}
 
 
 # =========================================================
@@ -137,6 +152,15 @@ def parse_fields(block):
     return result
 
 
+def is_valid_signal_minute(minute):
+
+    return (
+        15 <= minute <= 38
+        or
+        55 <= minute <= 85
+    )
+
+
 # =========================================================
 # TELEGRAM
 # =========================================================
@@ -199,7 +223,7 @@ def send_telegram(message):
 
 
 # =========================================================
-# DAKİKA
+# DAKIKA
 # =========================================================
 
 def calculate_minute(fields):
@@ -224,12 +248,14 @@ def calculate_minute(fields):
             if 1 <= minute <= 130:
                 return minute
 
+
     possible_keys = [
         "BB",
         "BD",
         "BE",
         "BF"
     ]
+
 
     for key in possible_keys:
 
@@ -252,6 +278,7 @@ def calculate_minute(fields):
 
         if 1 <= minute <= 130:
             return minute
+
 
     start_timestamp = number(
         fields.get("AD")
@@ -317,13 +344,23 @@ def calculate_minute(fields):
 
 
 # =========================================================
-# CANLI MAÇLAR
+# CANLI MACLAR
 # =========================================================
 
 def get_live_matches():
 
     response = session.get(
         LIVE_FEED_URL,
+        params={
+            "_": int(
+                time.time() * 1000
+            )
+        },
+        headers={
+            **HEADERS,
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache"
+        },
         timeout=20
     )
 
@@ -344,6 +381,7 @@ def get_live_matches():
     )
 
     matches = []
+
 
     for block in raw.split("~"):
 
@@ -385,15 +423,24 @@ def get_live_matches():
                 "id": match_id,
                 "home": home,
                 "away": away,
+
                 "home_score": int_value(
                     fields.get("AG")
                 ),
+
                 "away_score": int_value(
                     fields.get("AH")
                 ),
+
                 "minute": minute,
-                "start": fields.get("AD"),
-                "period": fields.get("BC"),
+
+                "start": fields.get(
+                    "AD"
+                ),
+
+                "period": fields.get(
+                    "BC"
+                ),
             }
         )
 
@@ -401,8 +448,7 @@ def get_live_matches():
 
 
 # =========================================================
-# YENI:
-# SINYALDEN HEMEN ONCE SKORU TEKRAR KONTROL ET
+# SINYALDEN ONCE SKORU TEKRAR KONTROL ET
 # =========================================================
 
 def get_fresh_match_state(match_id):
@@ -435,6 +481,7 @@ def get_fresh_match_state(match_id):
 
         raw = response.text
 
+
         for block in raw.split("~"):
 
             fields = parse_fields(
@@ -453,6 +500,7 @@ def get_fresh_match_state(match_id):
             )
 
             if status != "2":
+
                 return {
                     "live": False
                 }
@@ -488,7 +536,7 @@ def get_fresh_match_state(match_id):
 
 
 # =========================================================
-# İSTATİSTİK
+# ISTATISTIK
 # =========================================================
 
 def empty_stats():
@@ -639,6 +687,16 @@ def get_stats(match_id):
 
         response = session.get(
             url,
+            params={
+                "_": int(
+                    time.time() * 1000
+                )
+            },
+            headers={
+                **HEADERS,
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            },
             timeout=20
         )
 
@@ -666,6 +724,7 @@ def get_stats(match_id):
         current_home = None
         current_away = None
 
+
         def flush_current():
 
             nonlocal current_name
@@ -687,6 +746,7 @@ def get_stats(match_id):
                     current_home,
                     current_away
                 )
+
 
         for part in raw.split("¬"):
 
@@ -721,6 +781,7 @@ def get_stats(match_id):
             elif key == "SI":
 
                 current_away = value
+
 
         flush_current()
 
@@ -763,6 +824,7 @@ def calculate_recent_pressure(
     match_id = match["id"]
     now = time.time()
 
+
     current = {
         "time": now,
 
@@ -800,10 +862,12 @@ def calculate_recent_pressure(
         ),
     }
 
+
     history = match_history.setdefault(
         match_id,
         []
     )
+
 
     history[:] = [
         item
@@ -811,13 +875,16 @@ def calculate_recent_pressure(
         if now - item["time"] <= 1200
     ]
 
+
     baseline = None
+
 
     candidates = [
         item
         for item in history
         if 300 <= now - item["time"] <= 900
     ]
+
 
     if candidates:
 
@@ -832,12 +899,13 @@ def calculate_recent_pressure(
             )
         )
 
+
     history.append(
         current
     )
 
-    if baseline is None:
 
+    if baseline is None:
         return 0, None
 
 
@@ -892,7 +960,7 @@ def calculate_recent_pressure(
         pressure += 3
 
 
-    # Şut
+    # Sut
     if delta_shots >= 7:
         pressure += 11
 
@@ -909,7 +977,7 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # İsabetli şut
+    # Isabetli sut
     if delta_sot >= 4:
         pressure += 13
 
@@ -923,7 +991,7 @@ def calculate_recent_pressure(
         pressure += 4
 
 
-    # Büyük şans
+    # Buyuk sans
     if delta_big >= 2:
         pressure += 7
 
@@ -942,18 +1010,20 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # Kombinasyonlar
+    # Kombinasyon
     if (
         delta_shots >= 4
         and delta_sot >= 2
     ):
         pressure += 5
 
+
     if (
         delta_xg >= 0.35
         and delta_sot >= 2
     ):
         pressure += 5
+
 
     if (
         delta_big >= 1
@@ -997,11 +1067,12 @@ def calculate_recent_pressure(
         ),
     }
 
+
     return pressure, details
 
 
 # =========================================================
-# 0 - 100 GOL PUANI
+# 0-100 GOL PUANI
 # =========================================================
 
 def calculate_goal_score(
@@ -1073,7 +1144,7 @@ def calculate_goal_score(
         score += 5
 
 
-    # İsabetli şut
+    # Isabetli sut
     if sot >= 10:
         score += 25
 
@@ -1093,7 +1164,7 @@ def calculate_goal_score(
         score += 6
 
 
-    # Şut
+    # Sut
     if shots >= 25:
         score += 18
 
@@ -1113,7 +1184,7 @@ def calculate_goal_score(
         score += 3
 
 
-    # Büyük şans
+    # Buyuk sans
     if big >= 5:
         score += 15
 
@@ -1164,12 +1235,13 @@ def calculate_goal_score(
         score += 2
 
 
-    # Düşük skor bonusu
+    # Dusuk skor bonusu
     total_goals = (
         match["home_score"]
         +
         match["away_score"]
     )
+
 
     if (
         total_goals == 0
@@ -1184,13 +1256,14 @@ def calculate_goal_score(
         score += 3
 
 
-    # Güçlü baskı kombinasyonları
+    # Guclu baski kombinasyonlari
     if (
         xg >= 1.5
         and sot >= 5
         and shots >= 14
     ):
         score += 5
+
 
     if (
         big >= 2
@@ -1218,6 +1291,7 @@ def display_value(value):
         return "VERI YOK"
 
     if float(value).is_integer():
+
         return str(
             int(value)
         )
@@ -1276,11 +1350,23 @@ def make_signal_message(
 
 
 # =========================================================
-# ANA DÖNGÜ
+# ANA DONGU
 # =========================================================
 
 print(
     "GOL SINYAL BOTU BASLADI",
+    flush=True
+)
+
+print(
+    "SINYAL ALT SINIRI:",
+    SIGNAL_THRESHOLD,
+    flush=True
+)
+
+print(
+    "ADAY DOGRULAMA:",
+    str(SIGNAL_CONFIRM_SECONDS) + " SN",
     flush=True
 )
 
@@ -1307,11 +1393,13 @@ while True:
 
         matches = get_live_matches()
 
+
         print(
             "CANLI MAC SAYISI:",
             len(matches),
             flush=True
         )
+
 
         active_match_ids = set()
 
@@ -1334,9 +1422,11 @@ while True:
                 match["away_score"]
             )
 
+
             previous_score = last_scores.get(
                 match_id
             )
+
 
             goal_just_happened = False
 
@@ -1366,6 +1456,7 @@ while True:
 
                     goal_just_happened = True
 
+
                     goal_cooldowns[
                         match_id
                     ] = (
@@ -1374,18 +1465,30 @@ while True:
                         GOAL_COOLDOWN_SECONDS
                     )
 
+
                     match_history.pop(
                         match_id,
                         None
                     )
+
 
                     sent_signals.pop(
                         match_id,
                         None
                     )
 
+
+                    pending_signals.pop(
+                        match_id,
+                        None
+                    )
+
+
                     print(
-                        "GOL ALGILANDI:",
+                        "\nGOL ALGILANDI:",
+                        match["home"],
+                        "-",
+                        match["away"],
                         f"{previous_score[0]}-"
                         f"{previous_score[1]}",
                         "->",
@@ -1393,6 +1496,13 @@ while True:
                         f"{current_score[1]}",
                         flush=True
                     )
+
+
+                    print(
+                        "ADAY SINYAL IPTAL EDILDI",
+                        flush=True
+                    )
+
 
                     print(
                         "GOL SONRASI 5 DK "
@@ -1404,6 +1514,34 @@ while True:
                 last_scores[
                     match_id
                 ] = current_score
+
+
+            # =================================================
+            # SINYAL DAKIKASI DISINDA ISTATISTIK CEKME
+            # =================================================
+
+            if not is_valid_signal_minute(
+                match["minute"]
+            ):
+
+                if match_id in pending_signals:
+
+                    print(
+                        "ADAY SINYAL IPTAL: "
+                        "DAKIKA ARALIGI DISINA CIKTI",
+                        match["home"],
+                        "-",
+                        match["away"],
+                        match["minute"],
+                        flush=True
+                    )
+
+                    pending_signals.pop(
+                        match_id,
+                        None
+                    )
+
+                continue
 
 
             print(
@@ -1440,6 +1578,10 @@ while True:
                 flush=True
             )
 
+
+            # =================================================
+            # ISTATISTIKLER
+            # =================================================
 
             stats = get_stats(
                 match_id
@@ -1610,6 +1752,7 @@ while True:
                 )
             )
 
+
             in_goal_cooldown = (
                 time.time()
                 <
@@ -1638,315 +1781,590 @@ while True:
                 )
 
 
-            # =================================================
-            # SINYAL KURALLARI
-            # =================================================
-
-            valid_signal_minute = (
-                15 <= match["minute"] <= 38
-                or
-                55 <= match["minute"] <= 85
-            )
-
-
-            can_send_signal = (
-                goal_score >= 55
-                and valid_signal_minute
-                and not in_goal_cooldown
-                and not goal_just_happened
-            )
-
-
-            if can_send_signal:
-
-                previous = sent_signals.get(
-                    match_id
+                pending_signals.pop(
+                    match_id,
+                    None
                 )
 
-                should_send = False
 
+            # =================================================
+            # 68 ALTINA DUSERSE ADAYI IPTAL ET
+            # =================================================
 
-                if previous is None:
+            if goal_score < SIGNAL_THRESHOLD:
 
-                    should_send = True
-
-                else:
-
-                    last_minute = previous[
-                        "minute"
-                    ]
-
-                    last_score = previous[
-                        "score"
-                    ]
-
-
-                    if (
-                        match["minute"]
-                        - last_minute
-                        >= 15
-                    ):
-                        should_send = True
-
-
-                    if (
-                        last_score < 75
-                        and goal_score >= 75
-                    ):
-                        should_send = True
-
-
-                    if (
-                        goal_score
-                        >= last_score + 15
-                    ):
-                        should_send = True
-
-
-                if should_send:
-
-                    # =========================================
-                    # YENI:
-                    # TELEGRAMDAN HEMEN ONCE SKOR TEKRAR BAK
-                    # =========================================
+                if match_id in pending_signals:
 
                     print(
-                        "SINYAL ONCESI "
-                        "SKOR TEKRAR KONTROL EDILIYOR...",
+                        "ADAY SINYAL IPTAL: "
+                        "PUAN 68 ALTINA DUSTU:",
+                        goal_score,
                         flush=True
                     )
 
-                    fresh = get_fresh_match_state(
-                        match_id
+                    pending_signals.pop(
+                        match_id,
+                        None
                     )
 
+                continue
 
-                    if fresh is None:
 
-                        print(
-                            "SINYAL IPTAL: "
-                            "SON SKOR DOGRULANAMADI",
-                            flush=True
+            if in_goal_cooldown:
+                continue
+
+
+            if goal_just_happened:
+                continue
+
+
+            # =================================================
+            # DAHA ONCE SINYAL GONDERILDI MI?
+            # =================================================
+
+            previous = sent_signals.get(
+                match_id
+            )
+
+
+            eligible_for_signal = False
+
+
+            if previous is None:
+
+                eligible_for_signal = True
+
+            else:
+
+                last_minute = previous[
+                    "minute"
+                ]
+
+                last_score = previous[
+                    "score"
+                ]
+
+
+                if (
+                    match["minute"]
+                    - last_minute
+                    >= 15
+                ):
+                    eligible_for_signal = True
+
+
+                if (
+                    last_score < 75
+                    and goal_score >= 75
+                ):
+                    eligible_for_signal = True
+
+
+                if (
+                    goal_score
+                    >= last_score + 15
+                ):
+                    eligible_for_signal = True
+
+
+            if not eligible_for_signal:
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+                continue
+
+
+            # =================================================
+            # 60 SANIYELIK ADAY SINYAL SISTEMI
+            # =================================================
+
+            pending = pending_signals.get(
+                match_id
+            )
+
+
+            if pending is None:
+
+                pending_signals[
+                    match_id
+                ] = {
+                    "created_at":
+                        time.time(),
+
+                    "score":
+                        current_score,
+
+                    "minute":
+                        match["minute"],
+
+                    "goal_score":
+                        goal_score
+                }
+
+
+                print(
+                    "ADAY SINYAL OLUSTU:",
+                    match["home"],
+                    "-",
+                    match["away"],
+                    "| PUAN:",
+                    goal_score,
+                    "| SKOR:",
+                    f"{current_score[0]}-"
+                    f"{current_score[1]}",
+                    flush=True
+                )
+
+
+                print(
+                    "TELEGRAMA HEMEN GONDERILMEYECEK.",
+                    SIGNAL_CONFIRM_SECONDS,
+                    "SANIYE SKOR DOGRULAMASI BEKLENIYOR.",
+                    flush=True
+                )
+
+                continue
+
+
+            # =================================================
+            # ADAY OLUSTUKTAN SONRA SKOR DEGISTI MI?
+            # =================================================
+
+            pending_score = pending[
+                "score"
+            ]
+
+
+            if current_score != pending_score:
+
+                print(
+                    "ADAY SINYAL IPTAL: "
+                    "BEKLERKEN SKOR DEGISTI",
+                    pending_score,
+                    "->",
+                    current_score,
+                    flush=True
+                )
+
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                pending_total = (
+                    pending_score[0]
+                    +
+                    pending_score[1]
+                )
+
+                current_total = (
+                    current_score[0]
+                    +
+                    current_score[1]
+                )
+
+
+                if current_total > pending_total:
+
+                    goal_cooldowns[
+                        match_id
+                    ] = (
+                        time.time()
+                        +
+                        GOAL_COOLDOWN_SECONDS
+                    )
+
+                    match_history.pop(
+                        match_id,
+                        None
+                    )
+
+                    last_scores[
+                        match_id
+                    ] = current_score
+
+
+                    print(
+                        "GOL ALGILANDI. "
+                        "5 DK KILIT AKTIF.",
+                        flush=True
+                    )
+
+                continue
+
+
+            # =================================================
+            # 60 SANIYE DOLDU MU?
+            # =================================================
+
+            elapsed_candidate = (
+                time.time()
+                -
+                pending["created_at"]
+            )
+
+
+            if (
+                elapsed_candidate
+                <
+                SIGNAL_CONFIRM_SECONDS
+            ):
+
+                remaining = int(
+                    SIGNAL_CONFIRM_SECONDS
+                    -
+                    elapsed_candidate
+                )
+
+
+                print(
+                    "ADAY SINYAL BEKLIYOR:",
+                    str(
+                        max(
+                            remaining,
+                            0
                         )
+                    )
+                    + " SN",
+                    flush=True
+                )
 
-                    elif not fresh.get(
-                        "live",
-                        False
-                    ):
-
-                        print(
-                            "SINYAL IPTAL: "
-                            "MAC ARTIK CANLI DEGIL",
-                            flush=True
-                        )
-
-                    else:
-
-                        old_score = (
-                            match["home_score"],
-                            match["away_score"]
-                        )
-
-                        fresh_score = (
-                            fresh["home_score"],
-                            fresh["away_score"]
-                        )
-
-                        old_total = (
-                            old_score[0]
-                            +
-                            old_score[1]
-                        )
-
-                        fresh_total = (
-                            fresh_score[0]
-                            +
-                            fresh_score[1]
-                        )
+                continue
 
 
-                        # =====================================
-                        # SON KONTROLDE GOL GORULDU
-                        # =====================================
+            # =================================================
+            # 60 SN SONRA SON SKOR KONTROLU
+            # =================================================
 
-                        if fresh_total > old_total:
-
-                            print(
-                                "SINYAL IPTAL: "
-                                "SON KONTROLDE GOL ALGILANDI",
-                                old_score,
-                                "->",
-                                fresh_score,
-                                flush=True
-                            )
-
-                            goal_cooldowns[
-                                match_id
-                            ] = (
-                                time.time()
-                                +
-                                GOAL_COOLDOWN_SECONDS
-                            )
-
-                            match_history.pop(
-                                match_id,
-                                None
-                            )
-
-                            sent_signals.pop(
-                                match_id,
-                                None
-                            )
-
-                            last_scores[
-                                match_id
-                            ] = fresh_score
+            print(
+                "60 SN DOLDU. "
+                "SKOR SON KEZ KONTROL EDILIYOR...",
+                flush=True
+            )
 
 
-                        # =====================================
-                        # SKOR DEGISMIS AMA GOL ARTISI YOK
-                        # =====================================
-
-                        elif fresh_score != old_score:
-
-                            print(
-                                "SINYAL IPTAL: "
-                                "SKOR DOGRULAMASI DEGISTI",
-                                old_score,
-                                "->",
-                                fresh_score,
-                                flush=True
-                            )
-
-                            last_scores[
-                                match_id
-                            ] = fresh_score
+            fresh = get_fresh_match_state(
+                match_id
+            )
 
 
-                        else:
+            if fresh is None:
 
-                            # Güncel dakikayı kullan
-                            fresh_minute = fresh[
-                                "minute"
-                            ]
+                print(
+                    "SINYAL IPTAL: "
+                    "SON SKOR DOGRULANAMADI",
+                    flush=True
+                )
 
-                            fresh_valid_minute = (
-                                15 <= fresh_minute <= 38
-                                or
-                                55 <= fresh_minute <= 85
-                            )
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
 
-
-                            if not fresh_valid_minute:
-
-                                print(
-                                    "SINYAL IPTAL: "
-                                    "GUNCEL DAKIKA "
-                                    "SINYAL ARALIGI DISINDA",
-                                    fresh_minute,
-                                    flush=True
-                                )
-
-                            else:
-
-                                # Mesajda güncel dakika görünsün
-                                match[
-                                    "minute"
-                                ] = fresh_minute
-
-                                match[
-                                    "home_score"
-                                ] = fresh[
-                                    "home_score"
-                                ]
-
-                                match[
-                                    "away_score"
-                                ] = fresh[
-                                    "away_score"
-                                ]
+                continue
 
 
-                                # Güncel dakika/skorla puanı
-                                # tekrar hesapla
-                                goal_score = (
-                                    calculate_goal_score(
-                                        match,
-                                        stats,
-                                        recent_pressure
-                                    )
-                                )
+            if not fresh.get(
+                "live",
+                False
+            ):
+
+                print(
+                    "SINYAL IPTAL: "
+                    "MAC ARTIK CANLI DEGIL",
+                    flush=True
+                )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+                continue
 
 
-                                if goal_score < 55:
-
-                                    print(
-                                        "SINYAL IPTAL: "
-                                        "SON KONTROL PUANI "
-                                        "55 ALTINA DUSTU",
-                                        goal_score,
-                                        flush=True
-                                    )
-
-                                else:
-
-                                    message = (
-                                        make_signal_message(
-                                            match,
-                                            stats,
-                                            goal_score
-                                        )
-                                    )
-
-                                    sent = send_telegram(
-                                        message
-                                    )
+            fresh_score = (
+                fresh["home_score"],
+                fresh["away_score"]
+            )
 
 
-                                    if sent:
-
-                                        sent_signals[
-                                            match_id
-                                        ] = {
-                                            "minute":
-                                                match[
-                                                    "minute"
-                                                ],
-
-                                            "score":
-                                                goal_score
-                                        }
-
-                                        last_scores[
-                                            match_id
-                                        ] = (
-                                            match[
-                                                "home_score"
-                                            ],
-                                            match[
-                                                "away_score"
-                                            ]
-                                        )
-
-                                        print(
-                                            "SINYAL TELEGRAMA "
-                                            "GONDERILDI",
-                                            flush=True
-                                        )
+            pending_total = (
+                pending_score[0]
+                +
+                pending_score[1]
+            )
 
 
-            time.sleep(1)
+            fresh_total = (
+                fresh_score[0]
+                +
+                fresh_score[1]
+            )
+
+
+            # =================================================
+            # BEKLERKEN GOL OLMUS
+            # =================================================
+
+            if fresh_total > pending_total:
+
+                print(
+                    "SINYAL IPTAL: "
+                    "60 SN BEKLEMEDE GOL OLDU",
+                    pending_score,
+                    "->",
+                    fresh_score,
+                    flush=True
+                )
+
+
+                goal_cooldowns[
+                    match_id
+                ] = (
+                    time.time()
+                    +
+                    GOAL_COOLDOWN_SECONDS
+                )
+
+
+                match_history.pop(
+                    match_id,
+                    None
+                )
+
+
+                sent_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                last_scores[
+                    match_id
+                ] = fresh_score
+
+
+                continue
+
+
+            # =================================================
+            # SKOR BASKA SEKILDE DEGISTI
+            # =================================================
+
+            if fresh_score != pending_score:
+
+                print(
+                    "SINYAL IPTAL: "
+                    "SKOR DOGRULAMASI DEGISTI",
+                    pending_score,
+                    "->",
+                    fresh_score,
+                    flush=True
+                )
+
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                last_scores[
+                    match_id
+                ] = fresh_score
+
+
+                continue
+
+
+            # =================================================
+            # GUNCEL DAKIKA KONTROLU
+            # =================================================
+
+            fresh_minute = fresh[
+                "minute"
+            ]
+
+
+            if not is_valid_signal_minute(
+                fresh_minute
+            ):
+
+                print(
+                    "SINYAL IPTAL: "
+                    "GUNCEL DAKIKA "
+                    "SINYAL ARALIGI DISINDA:",
+                    fresh_minute,
+                    flush=True
+                )
+
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                continue
+
+
+            # =================================================
+            # ISTATISTIGI DE SON KEZ YENILE
+            # =================================================
+
+            print(
+                "SON ISTATISTIK KONTROLU...",
+                flush=True
+            )
+
+
+            fresh_stats = get_stats(
+                match_id
+            )
+
+
+            match[
+                "minute"
+            ] = fresh_minute
+
+
+            match[
+                "home_score"
+            ] = fresh[
+                "home_score"
+            ]
+
+
+            match[
+                "away_score"
+            ] = fresh[
+                "away_score"
+            ]
+
+
+            # Son gelen istatistiklerle puani yeniden hesapla
+            final_goal_score = (
+                calculate_goal_score(
+                    match,
+                    fresh_stats,
+                    recent_pressure
+                )
+            )
+
+
+            print(
+                "SON DOGRULAMA GOL PUANI:",
+                str(
+                    final_goal_score
+                )
+                + "/100",
+                flush=True
+            )
+
+
+            # =================================================
+            # SON PUAN DA 68+ OLMALI
+            # =================================================
+
+            if (
+                final_goal_score
+                <
+                SIGNAL_THRESHOLD
+            ):
+
+                print(
+                    "SINYAL IPTAL: "
+                    "SON PUAN 68 ALTINDA:",
+                    final_goal_score,
+                    flush=True
+                )
+
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+
+                continue
+
+
+            # =================================================
+            # TELEGRAM
+            # =================================================
+
+            message = (
+                make_signal_message(
+                    match,
+                    fresh_stats,
+                    final_goal_score
+                )
+            )
+
+
+            sent = send_telegram(
+                message
+            )
+
+
+            if sent:
+
+                sent_signals[
+                    match_id
+                ] = {
+                    "minute":
+                        match[
+                            "minute"
+                        ],
+
+                    "score":
+                        final_goal_score
+                }
+
+
+                last_scores[
+                    match_id
+                ] = (
+                    match[
+                        "home_score"
+                    ],
+                    match[
+                        "away_score"
+                    ]
+                )
+
+
+                print(
+                    "SINYAL TELEGRAMA GONDERILDI",
+                    flush=True
+                )
+
+
+            pending_signals.pop(
+                match_id,
+                None
+            )
 
 
         # =================================================
         # BITEN MACLARIN VERILERINI TEMIZLE
         # =================================================
 
-        old_history_ids = list(
+        for old_id in list(
             match_history.keys()
-        )
-
-        for old_id in old_history_ids:
+        ):
 
             if old_id not in active_match_ids:
 
@@ -1956,11 +2374,9 @@ while True:
                 )
 
 
-        old_signal_ids = list(
+        for old_id in list(
             sent_signals.keys()
-        )
-
-        for old_id in old_signal_ids:
+        ):
 
             if old_id not in active_match_ids:
 
@@ -1970,11 +2386,9 @@ while True:
                 )
 
 
-        old_score_ids = list(
+        for old_id in list(
             last_scores.keys()
-        )
-
-        for old_id in old_score_ids:
+        ):
 
             if old_id not in active_match_ids:
 
@@ -1984,15 +2398,25 @@ while True:
                 )
 
 
-        old_cooldown_ids = list(
+        for old_id in list(
             goal_cooldowns.keys()
-        )
-
-        for old_id in old_cooldown_ids:
+        ):
 
             if old_id not in active_match_ids:
 
                 goal_cooldowns.pop(
+                    old_id,
+                    None
+                )
+
+
+        for old_id in list(
+            pending_signals.keys()
+        ):
+
+            if old_id not in active_match_ids:
+
+                pending_signals.pop(
                     old_id,
                     None
                 )
@@ -2012,6 +2436,7 @@ while True:
         "60 SANIYE BEKLENIYOR...",
         flush=True
     )
+
 
     time.sleep(
         POLL_SECONDS
