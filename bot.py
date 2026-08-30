@@ -751,50 +751,67 @@ def calculate_recent_pressure(
 
     pressure = 0
 
+
+    # =====================================================
+    # GUCLENDIRILMIS xG ARTISI
+    # =====================================================
+
     if delta_xg >= 0.70:
-        pressure += 10
+        pressure += 12
 
     elif delta_xg >= 0.50:
-        pressure += 8
+        pressure += 10
 
     elif delta_xg >= 0.35:
-        pressure += 6
+        pressure += 8
 
     elif delta_xg >= 0.20:
-        pressure += 4
-
-    elif delta_xg >= 0.10:
-        pressure += 2
-
-
-    if delta_shots >= 7:
-        pressure += 9
-
-    elif delta_shots >= 5:
-        pressure += 7
-
-    elif delta_shots >= 4:
         pressure += 5
 
-    elif delta_shots >= 3:
+    elif delta_xg >= 0.10:
         pressure += 3
+
+
+    # =====================================================
+    # GUCLENDIRILMIS SUT ARTISI
+    # =====================================================
+
+    if delta_shots >= 7:
+        pressure += 11
+
+    elif delta_shots >= 5:
+        pressure += 9
+
+    elif delta_shots >= 4:
+        pressure += 7
+
+    elif delta_shots >= 3:
+        pressure += 4
 
     elif delta_shots >= 2:
         pressure += 2
 
 
+    # =====================================================
+    # GUCLENDIRILMIS ISABETLI SUT ARTISI
+    # =====================================================
+
     if delta_sot >= 4:
-        pressure += 10
+        pressure += 13
 
     elif delta_sot >= 3:
-        pressure += 8
+        pressure += 10
 
     elif delta_sot >= 2:
-        pressure += 6
+        pressure += 8
 
     elif delta_sot >= 1:
-        pressure += 3
+        pressure += 4
 
+
+    # =====================================================
+    # BUYUK SANS
+    # =====================================================
 
     if delta_big >= 2:
         pressure += 7
@@ -802,6 +819,10 @@ def calculate_recent_pressure(
     elif delta_big >= 1:
         pressure += 4
 
+
+    # =====================================================
+    # KORNER
+    # =====================================================
 
     if delta_corners >= 4:
         pressure += 4
@@ -813,29 +834,38 @@ def calculate_recent_pressure(
         pressure += 2
 
 
+    # =====================================================
+    # GUCLENDIRILMIS ANI BASKI KOMBINASYONLARI
+    # =====================================================
+
     if (
         delta_shots >= 4
         and delta_sot >= 2
     ):
-        pressure += 4
+        pressure += 5
 
     if (
         delta_xg >= 0.35
         and delta_sot >= 2
     ):
-        pressure += 4
+        pressure += 5
 
     if (
         delta_big >= 1
         and delta_sot >= 2
     ):
-        pressure += 3
+        pressure += 4
 
+
+    # =====================================================
+    # BASKI BONUSU MAKSIMUM 40
+    # =====================================================
 
     pressure = min(
         pressure,
-        30
+        40
     )
+
 
     details = {
         "minutes": max(
@@ -916,6 +946,11 @@ def calculate_goal_score(
 
     score = 0
 
+
+    # =====================================================
+    # xG
+    # =====================================================
+
     if xg >= 3.0:
         score += 30
 
@@ -938,6 +973,10 @@ def calculate_goal_score(
         score += 5
 
 
+    # =====================================================
+    # ISABETLI SUT
+    # =====================================================
+
     if sot >= 10:
         score += 25
 
@@ -956,6 +995,10 @@ def calculate_goal_score(
     elif sot >= 2:
         score += 6
 
+
+    # =====================================================
+    # SUT
+    # =====================================================
 
     if shots >= 25:
         score += 18
@@ -976,6 +1019,10 @@ def calculate_goal_score(
         score += 3
 
 
+    # =====================================================
+    # BUYUK SANS
+    # =====================================================
+
     if big >= 5:
         score += 15
 
@@ -992,6 +1039,10 @@ def calculate_goal_score(
         score += 4
 
 
+    # =====================================================
+    # KORNER
+    # =====================================================
+
     if corners >= 12:
         score += 7
 
@@ -1004,6 +1055,10 @@ def calculate_goal_score(
     elif corners >= 4:
         score += 2
 
+
+    # =====================================================
+    # DAKIKA
+    # =====================================================
 
     if minute >= 86:
         score += 10
@@ -1024,6 +1079,10 @@ def calculate_goal_score(
         score += 2
 
 
+    # =====================================================
+    # DUSUK SKOR BONUSU
+    # =====================================================
+
     total_goals = (
         match["home_score"]
         +
@@ -1043,6 +1102,10 @@ def calculate_goal_score(
         score += 3
 
 
+    # =====================================================
+    # GUCLU BASKI KOMBINASYONLARI
+    # =====================================================
+
     if (
         xg >= 1.5
         and sot >= 5
@@ -1057,6 +1120,7 @@ def calculate_goal_score(
         score += 3
 
 
+    # Son 5-10 dakika baskı bonusu
     score += recent_pressure
 
 
@@ -1174,8 +1238,9 @@ while True:
                 match_id
             )
 
+
             # =================================================
-            # YENI: GOL ALGILAMA
+            # GOL ALGILAMA
             # =================================================
 
             current_score = (
@@ -1189,8 +1254,7 @@ while True:
 
             goal_just_happened = False
 
-            # Bot maçı ilk kez görüyorsa sadece skoru kaydet.
-            # Mevcut skoru yeni gol sanma.
+
             if previous_score is None:
 
                 last_scores[
@@ -1211,7 +1275,7 @@ while True:
                     current_score[1]
                 )
 
-                # Toplam gol sayısı arttıysa yeni gol var.
+
                 if current_total > previous_total:
 
                     goal_just_happened = True
@@ -1224,15 +1288,11 @@ while True:
                         GOAL_COOLDOWN_SECONDS
                     )
 
-                    # Gol öncesindeki baskıyı tamamen sil.
                     match_history.pop(
                         match_id,
                         None
                     )
 
-                    # Gol öncesi sinyal kaydını da sıfırla.
-                    # Kilit bittikten sonra yeni pozisyon için
-                    # yeniden sinyal üretebilsin.
                     sent_signals.pop(
                         match_id,
                         None
@@ -1254,9 +1314,7 @@ while True:
                         flush=True
                     )
 
-                # Skor her durumda güncellensin.
-                # Gol iptali/düzeltmesi olursa da
-                # yeni referans doğru skor olur.
+
                 last_scores[
                     match_id
                 ] = current_score
@@ -1294,9 +1352,11 @@ while True:
                 flush=True
             )
 
+
             stats = get_stats(
                 match_id
             )
+
 
             print(
                 "xG:",
@@ -1339,12 +1399,17 @@ while True:
             )
 
 
+            # =================================================
+            # SON DONEM BASKISI
+            # =================================================
+
             recent_pressure, pressure_details = (
                 calculate_recent_pressure(
                     match,
                     stats
                 )
             )
+
 
             if pressure_details:
 
@@ -1437,6 +1502,7 @@ while True:
                 recent_pressure
             )
 
+
             print(
                 "GOL PUANI:",
                 str(goal_score) + "/100",
@@ -1445,7 +1511,7 @@ while True:
 
 
             # =================================================
-            # GOL SONRASI KILIT KONTROLU
+            # GOL SONRASI KILIT
             # =================================================
 
             cooldown_until = (
@@ -1460,6 +1526,7 @@ while True:
                 <
                 cooldown_until
             )
+
 
             if in_goal_cooldown:
 
@@ -1482,21 +1549,24 @@ while True:
                 )
 
 
-            # -----------------------------------
-            # 55+ güçlü sinyal
-            # 75+ çok güçlü
+            # =================================================
+            # SINYAL KURALLARI
             #
-            # Sinyal aralığı:
-            # 20-38 ve 50-82
+            # 55+ GUCLU
+            # 75+ COK GUCLU
             #
-            # Gol sonrası 5 dakika sinyal YOK
-            # -----------------------------------
+            # 15-38
+            # 55-85
+            #
+            # GOL SONRASI 5 DK SINYAL YOK
+            # =================================================
 
             valid_signal_minute = (
                 15 <= match["minute"] <= 38
                 or
-                55 <= match["minute"] <= 84
+                55 <= match["minute"] <= 85
             )
+
 
             can_send_signal = (
                 goal_score >= 55
@@ -1505,6 +1575,7 @@ while True:
                 and not goal_just_happened
             )
 
+
             if can_send_signal:
 
                 previous = sent_signals.get(
@@ -1512,6 +1583,7 @@ while True:
                 )
 
                 should_send = False
+
 
                 if previous is None:
 
@@ -1527,6 +1599,8 @@ while True:
                         "score"
                     ]
 
+
+                    # 15 dakika geçtiyse tekrar sinyal
                     if (
                         match["minute"]
                         - last_minute
@@ -1534,12 +1608,16 @@ while True:
                     ):
                         should_send = True
 
+
+                    # Güçlüden çok güçlüye çıktıysa
                     if (
                         last_score < 75
                         and goal_score >= 75
                     ):
                         should_send = True
 
+
+                    # Gol puanı en az 15 yükseldiyse
                     if (
                         goal_score
                         >= last_score + 15
@@ -1561,6 +1639,7 @@ while True:
                         message
                     )
 
+
                     if sent:
 
                         sent_signals[
@@ -1577,6 +1656,7 @@ while True:
                             "SINYAL TELEGRAMA GONDERILDI",
                             flush=True
                         )
+
 
             time.sleep(1)
 
@@ -1649,6 +1729,7 @@ while True:
             str(e),
             flush=True
         )
+
 
     print(
         "60 SANIYE BEKLENIYOR...",
