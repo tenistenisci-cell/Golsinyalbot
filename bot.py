@@ -1493,9 +1493,9 @@ while True:
             # -----------------------------------
 
             valid_signal_minute = (
-                20 <= match["minute"] <= 38
+                15 <= match["minute"] <= 38
                 or
-                50 <= match["minute"] <= 82
+                55 <= match["minute"] <= 84
             )
 
             can_send_signal = (
