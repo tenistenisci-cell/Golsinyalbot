@@ -12,6 +12,9 @@ import requests
 
 POLL_SECONDS = 60
 
+# Gol olduktan sonra kaç saniye sinyal gönderilmeyecek
+GOAL_COOLDOWN_SECONDS = 300
+
 LIVE_FEED_URL = (
     "https://local-global.flashscore.ninja/"
     "2/x/feed/f_1_0_3_en_1"
@@ -53,15 +56,16 @@ CHAT_ID = (
 
 sent_signals = {}
 
+# Her maçın önceki skorunu tutar
+last_scores = {}
+
+# Gol sonrası sinyal kilidinin biteceği zamanı tutar
+goal_cooldowns = {}
+
 
 # =========================================================
-# YENI: MAC ISTATISTIK GECMISI
+# MAC ISTATISTIK GECMISI
 # =========================================================
-
-# Her maçın önceki istatistiklerini burada tutacağız.
-# Railway yeniden başlarsa geçmiş sıfırlanır.
-# Bot tekrar birkaç dakika veri topladıktan sonra
-# son dönem baskısını yeniden hesaplamaya başlar.
 
 match_history = {}
 
@@ -198,7 +202,6 @@ def send_telegram(message):
 
 def calculate_minute(fields):
 
-    # 1) Flashscore BA canlı dakika
     ba = clean(fields.get("BA"))
 
     if ba:
@@ -215,7 +218,6 @@ def calculate_minute(fields):
             if 1 <= minute <= 130:
                 return minute
 
-    # 2) Bazı feedlerde farklı dakika alanları
     possible_keys = [
         "BB",
         "BD",
@@ -245,7 +247,6 @@ def calculate_minute(fields):
         if 1 <= minute <= 130:
             return minute
 
-    # 3) AD başlangıç zamanından yedek hesap
     start_timestamp = number(
         fields.get("AD")
     )
@@ -629,7 +630,7 @@ def get_stats(match_id):
 
 
 # =========================================================
-# YENI: SON 5-10 DAKIKA BASKI TAKIBI
+# SON 5-10 DAKIKA BASKI TAKIBI
 # =========================================================
 
 def stat_total(stats, home_key, away_key):
@@ -689,7 +690,6 @@ def calculate_recent_pressure(
         []
     )
 
-    # Son 20 dakikalık kayıt yeterli
     history[:] = [
         item
         for item in history
@@ -698,7 +698,6 @@ def calculate_recent_pressure(
 
     baseline = None
 
-    # Öncelik yaklaşık 10 dakika öncesi
     candidates = [
         item
         for item in history
@@ -714,12 +713,8 @@ def calculate_recent_pressure(
             )
         )
 
-    # Yeni kaydı bundan sonra ekliyoruz.
-    # Böylece kendi kendisiyle kıyaslanmıyor.
     history.append(current)
 
-    # Henüz en az 5 dakikalık geçmiş yoksa
-    # baskı bonusu verme.
     if baseline is None:
 
         return 0, None
@@ -756,10 +751,6 @@ def calculate_recent_pressure(
 
     pressure = 0
 
-    # -------------------------
-    # xG artışı
-    # -------------------------
-
     if delta_xg >= 0.70:
         pressure += 10
 
@@ -775,10 +766,6 @@ def calculate_recent_pressure(
     elif delta_xg >= 0.10:
         pressure += 2
 
-
-    # -------------------------
-    # Şut artışı
-    # -------------------------
 
     if delta_shots >= 7:
         pressure += 9
@@ -796,10 +783,6 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # -------------------------
-    # İsabetli şut artışı
-    # -------------------------
-
     if delta_sot >= 4:
         pressure += 10
 
@@ -813,20 +796,12 @@ def calculate_recent_pressure(
         pressure += 3
 
 
-    # -------------------------
-    # Büyük şans artışı
-    # -------------------------
-
     if delta_big >= 2:
         pressure += 7
 
     elif delta_big >= 1:
         pressure += 4
 
-
-    # -------------------------
-    # Korner artışı
-    # -------------------------
 
     if delta_corners >= 4:
         pressure += 4
@@ -837,10 +812,6 @@ def calculate_recent_pressure(
     elif delta_corners >= 2:
         pressure += 2
 
-
-    # -------------------------
-    # Ani baskı kombinasyonları
-    # -------------------------
 
     if (
         delta_shots >= 4
@@ -861,7 +832,6 @@ def calculate_recent_pressure(
         pressure += 3
 
 
-    # Çok aşırı bonus vermesin.
     pressure = min(
         pressure,
         30
@@ -946,10 +916,6 @@ def calculate_goal_score(
 
     score = 0
 
-    # -------------------------
-    # xG maksimum 30
-    # -------------------------
-
     if xg >= 3.0:
         score += 30
 
@@ -972,10 +938,6 @@ def calculate_goal_score(
         score += 5
 
 
-    # -------------------------
-    # İsabetli maksimum 25
-    # -------------------------
-
     if sot >= 10:
         score += 25
 
@@ -994,10 +956,6 @@ def calculate_goal_score(
     elif sot >= 2:
         score += 6
 
-
-    # -------------------------
-    # Şut maksimum 18
-    # -------------------------
 
     if shots >= 25:
         score += 18
@@ -1018,10 +976,6 @@ def calculate_goal_score(
         score += 3
 
 
-    # -------------------------
-    # Büyük şans maksimum 15
-    # -------------------------
-
     if big >= 5:
         score += 15
 
@@ -1038,10 +992,6 @@ def calculate_goal_score(
         score += 4
 
 
-    # -------------------------
-    # Korner maksimum 7
-    # -------------------------
-
     if corners >= 12:
         score += 7
 
@@ -1054,11 +1004,6 @@ def calculate_goal_score(
     elif corners >= 4:
         score += 2
 
-
-    # -------------------------
-    # Dakika baskısı
-    # ESKI HALINI KORUDUK
-    # -------------------------
 
     if minute >= 86:
         score += 10
@@ -1079,10 +1024,6 @@ def calculate_goal_score(
         score += 2
 
 
-    # -------------------------
-    # Düşük skor bonusu
-    # -------------------------
-
     total_goals = (
         match["home_score"]
         +
@@ -1102,10 +1043,6 @@ def calculate_goal_score(
         score += 3
 
 
-    # -------------------------
-    # Çok güçlü baskı bonusları
-    # -------------------------
-
     if (
         xg >= 1.5
         and sot >= 5
@@ -1119,10 +1056,6 @@ def calculate_goal_score(
     ):
         score += 3
 
-
-    # =====================================================
-    # YENI: SON 5-10 DAKIKA BASKI BONUSU
-    # =====================================================
 
     score += recent_pressure
 
@@ -1235,9 +1168,99 @@ while True:
 
         for match in matches:
 
+            match_id = match["id"]
+
             active_match_ids.add(
-                match["id"]
+                match_id
             )
+
+            # =================================================
+            # YENI: GOL ALGILAMA
+            # =================================================
+
+            current_score = (
+                match["home_score"],
+                match["away_score"]
+            )
+
+            previous_score = last_scores.get(
+                match_id
+            )
+
+            goal_just_happened = False
+
+            # Bot maçı ilk kez görüyorsa sadece skoru kaydet.
+            # Mevcut skoru yeni gol sanma.
+            if previous_score is None:
+
+                last_scores[
+                    match_id
+                ] = current_score
+
+            else:
+
+                previous_total = (
+                    previous_score[0]
+                    +
+                    previous_score[1]
+                )
+
+                current_total = (
+                    current_score[0]
+                    +
+                    current_score[1]
+                )
+
+                # Toplam gol sayısı arttıysa yeni gol var.
+                if current_total > previous_total:
+
+                    goal_just_happened = True
+
+                    goal_cooldowns[
+                        match_id
+                    ] = (
+                        time.time()
+                        +
+                        GOAL_COOLDOWN_SECONDS
+                    )
+
+                    # Gol öncesindeki baskıyı tamamen sil.
+                    match_history.pop(
+                        match_id,
+                        None
+                    )
+
+                    # Gol öncesi sinyal kaydını da sıfırla.
+                    # Kilit bittikten sonra yeni pozisyon için
+                    # yeniden sinyal üretebilsin.
+                    sent_signals.pop(
+                        match_id,
+                        None
+                    )
+
+                    print(
+                        "GOL ALGILANDI:",
+                        f"{previous_score[0]}-"
+                        f"{previous_score[1]}",
+                        "->",
+                        f"{current_score[0]}-"
+                        f"{current_score[1]}",
+                        flush=True
+                    )
+
+                    print(
+                        "GOL SONRASI 5 DK "
+                        "SINYAL KILIDI AKTIF",
+                        flush=True
+                    )
+
+                # Skor her durumda güncellensin.
+                # Gol iptali/düzeltmesi olursa da
+                # yeni referans doğru skor olur.
+                last_scores[
+                    match_id
+                ] = current_score
+
 
             print(
                 "\n-------------------------",
@@ -1267,12 +1290,12 @@ while True:
 
             print(
                 "MATCH ID:",
-                match["id"],
+                match_id,
                 flush=True
             )
 
             stats = get_stats(
-                match["id"]
+                match_id
             )
 
             print(
@@ -1315,9 +1338,6 @@ while True:
                 flush=True
             )
 
-            # =================================================
-            # YENI: SON DAKIKALARDAKI BASKIYI HESAPLA
-            # =================================================
 
             recent_pressure, pressure_details = (
                 calculate_recent_pressure(
@@ -1423,11 +1443,53 @@ while True:
                 flush=True
             )
 
+
+            # =================================================
+            # GOL SONRASI KILIT KONTROLU
+            # =================================================
+
+            cooldown_until = (
+                goal_cooldowns.get(
+                    match_id,
+                    0
+                )
+            )
+
+            in_goal_cooldown = (
+                time.time()
+                <
+                cooldown_until
+            )
+
+            if in_goal_cooldown:
+
+                remaining_seconds = int(
+                    cooldown_until
+                    -
+                    time.time()
+                )
+
+                print(
+                    "GOL SONRASI KILIT:",
+                    str(
+                        max(
+                            remaining_seconds,
+                            0
+                        )
+                    )
+                    + " SN",
+                    flush=True
+                )
+
+
             # -----------------------------------
             # 55+ güçlü sinyal
             # 75+ çok güçlü
-            # Sinyal araligi:
+            #
+            # Sinyal aralığı:
             # 20-38 ve 50-82
+            #
+            # Gol sonrası 5 dakika sinyal YOK
             # -----------------------------------
 
             valid_signal_minute = (
@@ -1436,9 +1498,14 @@ while True:
                 50 <= match["minute"] <= 82
             )
 
-            if goal_score >= 55 and valid_signal_minute:
+            can_send_signal = (
+                goal_score >= 55
+                and valid_signal_minute
+                and not in_goal_cooldown
+                and not goal_just_happened
+            )
 
-                match_id = match["id"]
+            if can_send_signal:
 
                 previous = sent_signals.get(
                     match_id
@@ -1460,7 +1527,6 @@ while True:
                         "score"
                     ]
 
-                    # 15 dakika geçtiyse tekrar
                     if (
                         match["minute"]
                         - last_minute
@@ -1468,19 +1534,18 @@ while True:
                     ):
                         should_send = True
 
-                    # Güçlüden çok güçlüye çıktıysa
                     if (
                         last_score < 75
                         and goal_score >= 75
                     ):
                         should_send = True
 
-                    # Puan 15+ yükseldiyse
                     if (
                         goal_score
                         >= last_score + 15
                     ):
                         should_send = True
+
 
                 if should_send:
 
@@ -1517,7 +1582,7 @@ while True:
 
 
         # =================================================
-        # BITEN MACLARIN GECMISINI TEMIZLE
+        # BITEN MACLARIN VERILERINI TEMIZLE
         # =================================================
 
         old_history_ids = list(
@@ -1533,6 +1598,7 @@ while True:
                     None
                 )
 
+
         old_signal_ids = list(
             sent_signals.keys()
         )
@@ -1542,6 +1608,34 @@ while True:
             if old_id not in active_match_ids:
 
                 sent_signals.pop(
+                    old_id,
+                    None
+                )
+
+
+        old_score_ids = list(
+            last_scores.keys()
+        )
+
+        for old_id in old_score_ids:
+
+            if old_id not in active_match_ids:
+
+                last_scores.pop(
+                    old_id,
+                    None
+                )
+
+
+        old_cooldown_ids = list(
+            goal_cooldowns.keys()
+        )
+
+        for old_id in old_cooldown_ids:
+
+            if old_id not in active_match_ids:
+
+                goal_cooldowns.pop(
                     old_id,
                     None
                 )
