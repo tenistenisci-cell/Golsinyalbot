@@ -1,8 +1,10 @@
 import os
 import re
 import time
+import threading
 
 import requests
+import psycopg2
 
 
 # =========================================================
@@ -11,16 +13,9 @@ import requests
 
 POLL_SECONDS = 60
 
-# Sinyal alt siniri
 SIGNAL_THRESHOLD = 68
-
-# Aday sinyal doğrulama suresi
 SIGNAL_CONFIRM_SECONDS = 60
-
-# Gol sonrasi kilit
 GOAL_COOLDOWN_SECONDS = 300
-
-# Son 5 dakika tempo icin minimum puan
 TEMPO_MIN_SCORE = 4
 
 
@@ -66,6 +61,8 @@ CHAT_ID = (
     or os.getenv("CHAT_ID")
 )
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 
 # Daha once gonderilen sinyaller
 sent_signals = {}
@@ -81,6 +78,803 @@ match_history = {}
 
 # 60 saniye bekleyen aday sinyaller
 pending_signals = {}
+
+
+# =========================================================
+# POSTGRESQL
+# =========================================================
+
+def get_db_connection():
+
+    if not DATABASE_URL:
+        return None
+
+    return psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10
+    )
+
+
+def init_database():
+
+    if not DATABASE_URL:
+
+        print(
+            "DATABASE_URL YOK",
+            flush=True
+        )
+
+        return False
+
+    try:
+
+        conn = get_db_connection()
+
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscribers (
+                chat_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
+        print(
+            "POSTGRESQL HAZIR",
+            flush=True
+        )
+
+        # Mevcut Railway TELEGRAM_CHAT_ID sahibini
+        # otomatik ilk kullanici olarak kaydet.
+        if CHAT_ID:
+
+            try:
+
+                owner_chat_id = int(
+                    str(CHAT_ID).strip()
+                )
+
+                conn = get_db_connection()
+                cur = conn.cursor()
+
+                cur.execute(
+                    """
+                    INSERT INTO subscribers (
+                        chat_id,
+                        active
+                    )
+                    VALUES (%s, TRUE)
+                    ON CONFLICT (chat_id)
+                    DO NOTHING
+                    """,
+                    (
+                        owner_chat_id,
+                    )
+                )
+
+                conn.commit()
+
+                cur.close()
+                conn.close()
+
+                print(
+                    "ANA CHAT ID VERITABANINDA",
+                    flush=True
+                )
+
+            except Exception as e:
+
+                print(
+                    "ANA CHAT ID KAYIT HATA:",
+                    type(e).__name__,
+                    str(e),
+                    flush=True
+                )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            "POSTGRESQL BASLATMA HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        return False
+
+
+def add_subscriber(
+    chat_id,
+    username=None,
+    first_name=None
+):
+
+    try:
+
+        conn = get_db_connection()
+
+        if conn is None:
+            return False
+
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            INSERT INTO subscribers (
+                chat_id,
+                username,
+                first_name,
+                active
+            )
+            VALUES (%s, %s, %s, TRUE)
+
+            ON CONFLICT (chat_id)
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                active = TRUE,
+                updated_at = NOW()
+            """,
+            (
+                int(chat_id),
+                username,
+                first_name
+            )
+        )
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
+        print(
+            "KULLANICI AKTIF:",
+            chat_id,
+            username or "",
+            flush=True
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            "KULLANICI KAYIT HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        return False
+
+
+def remove_subscriber(chat_id):
+
+    try:
+
+        conn = get_db_connection()
+
+        if conn is None:
+            return False
+
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            UPDATE subscribers
+            SET
+                active = FALSE,
+                updated_at = NOW()
+            WHERE chat_id = %s
+            """,
+            (
+                int(chat_id),
+            )
+        )
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
+        print(
+            "KULLANICI PASIF:",
+            chat_id,
+            flush=True
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            "KULLANICI SILME HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        return False
+
+
+def subscriber_is_active(chat_id):
+
+    try:
+
+        conn = get_db_connection()
+
+        if conn is None:
+            return False
+
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT active
+            FROM subscribers
+            WHERE chat_id = %s
+            """,
+            (
+                int(chat_id),
+            )
+        )
+
+        row = cur.fetchone()
+
+        cur.close()
+        conn.close()
+
+        if not row:
+            return False
+
+        return bool(
+            row[0]
+        )
+
+    except Exception:
+
+        return False
+
+
+def get_active_chat_ids():
+
+    try:
+
+        conn = get_db_connection()
+
+        if conn is None:
+            raise RuntimeError(
+                "DATABASE BAGLANTISI YOK"
+            )
+
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT chat_id
+            FROM subscribers
+            WHERE active = TRUE
+            ORDER BY created_at ASC
+            """
+        )
+
+        rows = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        chat_ids = [
+            int(row[0])
+            for row in rows
+        ]
+
+        print(
+            "AKTIF KULLANICI SAYISI:",
+            len(chat_ids),
+            flush=True
+        )
+
+        return chat_ids
+
+    except Exception as e:
+
+        print(
+            "KULLANICI LISTESI HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        # Veritabani gecici olarak giderse
+        # eski ana kullanici yine sinyal alabilsin.
+        if CHAT_ID:
+
+            try:
+                return [
+                    int(
+                        str(CHAT_ID).strip()
+                    )
+                ]
+            except Exception:
+                pass
+
+        return []
+
+
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+def send_to_chat(
+    chat_id,
+    message
+):
+
+    if not BOT_TOKEN:
+        return False
+
+    try:
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{BOT_TOKEN}/sendMessage"
+        )
+
+        response = requests.post(
+            url,
+            data={
+                "chat_id": chat_id,
+                "text": message
+            },
+            timeout=20
+        )
+
+        if response.status_code == 200:
+            return True
+
+        print(
+            "TELEGRAM GONDERIM HATA:",
+            chat_id,
+            response.status_code,
+            response.text[:200],
+            flush=True
+        )
+
+        # Kullanici botu engellediyse
+        # veritabaninda pasif yap.
+        if response.status_code == 403:
+
+            remove_subscriber(
+                chat_id
+            )
+
+        # Telegram hiz siniri
+        if response.status_code == 429:
+
+            try:
+
+                data = response.json()
+
+                retry_after = int(
+                    data.get(
+                        "parameters",
+                        {}
+                    ).get(
+                        "retry_after",
+                        1
+                    )
+                )
+
+                time.sleep(
+                    min(
+                        retry_after,
+                        10
+                    )
+                )
+
+                response = requests.post(
+                    url,
+                    data={
+                        "chat_id": chat_id,
+                        "text": message
+                    },
+                    timeout=20
+                )
+
+                return (
+                    response.status_code
+                    == 200
+                )
+
+            except Exception:
+                return False
+
+        return False
+
+    except Exception as e:
+
+        print(
+            "TELEGRAM HATA:",
+            chat_id,
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        return False
+
+
+def send_telegram(message):
+
+    if not BOT_TOKEN:
+
+        print(
+            "TELEGRAM TOKEN YOK",
+            flush=True
+        )
+
+        return False
+
+    chat_ids = get_active_chat_ids()
+
+    if not chat_ids:
+
+        print(
+            "AKTIF TELEGRAM KULLANICISI YOK",
+            flush=True
+        )
+
+        return False
+
+
+    success_count = 0
+
+
+    for chat_id in chat_ids:
+
+        sent = send_to_chat(
+            chat_id,
+            message
+        )
+
+        if sent:
+
+            success_count += 1
+
+        # Telegram toplu gonderimde
+        # cok hizli istek atmayalim.
+        time.sleep(
+            0.05
+        )
+
+
+    print(
+        "TELEGRAM SINYAL:",
+        success_count,
+        "/",
+        len(chat_ids),
+        "KULLANICIYA GONDERILDI",
+        flush=True
+    )
+
+
+    return (
+        success_count > 0
+    )
+
+
+# =========================================================
+# TELEGRAM /START /STOP SISTEMI
+# =========================================================
+
+def telegram_command_listener():
+
+    if not BOT_TOKEN:
+
+        print(
+            "KOMUT DINLEYICI: TOKEN YOK",
+            flush=True
+        )
+
+        return
+
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/getUpdates"
+    )
+
+
+    offset = None
+
+
+    # Eski bekleyen Telegram komutlarini temizle.
+    # Boylece haftalar once yazilmis /stop gibi komutlar
+    # deployment sonrasi tekrar calismaz.
+
+    try:
+
+        response = requests.get(
+            url,
+            params={
+                "offset": -1,
+                "timeout": 0
+            },
+            timeout=10
+        )
+
+        if response.status_code == 200:
+
+            data = response.json()
+
+            results = data.get(
+                "result",
+                []
+            )
+
+            if results:
+
+                offset = (
+                    results[-1]["update_id"]
+                    + 1
+                )
+
+    except Exception as e:
+
+        print(
+            "KOMUT BASLANGIC HATA:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+
+    print(
+        "TELEGRAM /START /STOP DINLEYICI AKTIF",
+        flush=True
+    )
+
+
+    while True:
+
+        try:
+
+            params = {
+                "timeout": 25
+            }
+
+            if offset is not None:
+
+                params[
+                    "offset"
+                ] = offset
+
+
+            response = requests.get(
+                url,
+                params=params,
+                timeout=35
+            )
+
+
+            if response.status_code != 200:
+
+                print(
+                    "GETUPDATES HTTP:",
+                    response.status_code,
+                    response.text[:200],
+                    flush=True
+                )
+
+                time.sleep(
+                    5
+                )
+
+                continue
+
+
+            data = response.json()
+
+
+            for update in data.get(
+                "result",
+                []
+            ):
+
+                offset = (
+                    update[
+                        "update_id"
+                    ]
+                    + 1
+                )
+
+
+                message = update.get(
+                    "message"
+                )
+
+                if not message:
+                    continue
+
+
+                chat = message.get(
+                    "chat",
+                    {}
+                )
+
+
+                # Sadece ozel Telegram sohbetleri.
+                # Bot gruba eklenirse grup otomatik abone olmasin.
+                if chat.get(
+                    "type"
+                ) != "private":
+
+                    continue
+
+
+                chat_id = chat.get(
+                    "id"
+                )
+
+
+                if chat_id is None:
+                    continue
+
+
+                text = (
+                    message.get(
+                        "text"
+                    )
+                    or ""
+                ).strip()
+
+
+                if not text:
+                    continue
+
+
+                command = (
+                    text
+                    .split()[0]
+                    .lower()
+                    .split("@")[0]
+                )
+
+
+                user = message.get(
+                    "from",
+                    {}
+                )
+
+
+                username = user.get(
+                    "username"
+                )
+
+                first_name = user.get(
+                    "first_name"
+                )
+
+
+                # =============================================
+                # /START
+                # =============================================
+
+                if command == "/start":
+
+                    saved = add_subscriber(
+                        chat_id,
+                        username,
+                        first_name
+                    )
+
+
+                    if saved:
+
+                        send_to_chat(
+                            chat_id,
+                            (
+                                "✅ GOL SINYALLERI AKTIF\n\n"
+                                "Guclu gol sinyalleri "
+                                "otomatik olarak bu sohbete "
+                                "gelecek.\n\n"
+                                "Sinyalleri durdurmak icin: "
+                                "/stop"
+                            )
+                        )
+
+                    else:
+
+                        send_to_chat(
+                            chat_id,
+                            (
+                                "⚠️ Kayit sirasinda gecici "
+                                "bir sorun olustu.\n"
+                                "Biraz sonra tekrar /start "
+                                "yazabilirsin."
+                            )
+                        )
+
+
+                # =============================================
+                # /STOP
+                # =============================================
+
+                elif command == "/stop":
+
+                    removed = remove_subscriber(
+                        chat_id
+                    )
+
+
+                    if removed:
+
+                        send_to_chat(
+                            chat_id,
+                            (
+                                "⛔ GOL SINYALLERI DURDURULDU\n\n"
+                                "Tekrar sinyal almak icin "
+                                "/start yazabilirsin."
+                            )
+                        )
+
+
+                # =============================================
+                # /STATUS
+                # =============================================
+
+                elif command == "/status":
+
+                    active = subscriber_is_active(
+                        chat_id
+                    )
+
+
+                    if active:
+
+                        send_to_chat(
+                            chat_id,
+                            (
+                                "✅ Sinyal aboneligin aktif."
+                            )
+                        )
+
+                    else:
+
+                        send_to_chat(
+                            chat_id,
+                            (
+                                "⛔ Sinyal aboneligin aktif degil.\n"
+                                "Aktif etmek icin /start yaz."
+                            )
+                        )
+
+
+        except Exception as e:
+
+            print(
+                "KOMUT DINLEYICI HATA:",
+                type(e).__name__,
+                str(e),
+                flush=True
+            )
+
+            time.sleep(
+                5
+            )
 
 
 # =========================================================
@@ -121,21 +915,30 @@ def number(value):
         return None
 
 
-def int_value(value, default=0):
+def int_value(
+    value,
+    default=0
+):
 
-    n = number(value)
+    n = number(
+        value
+    )
 
     if n is None:
         return default
 
-    return int(n)
+    return int(
+        n
+    )
 
 
 def parse_fields(block):
 
     result = {}
 
-    for item in block.split("¬"):
+    for item in block.split(
+        "¬"
+    ):
 
         if "÷" not in item:
             continue
@@ -145,11 +948,18 @@ def parse_fields(block):
             1
         )
 
-        key = key.lstrip("~").strip()
+        key = (
+            key
+            .lstrip("~")
+            .strip()
+        )
+
         value = value.strip()
 
         if key:
-            result[key] = value
+            result[
+                key
+            ] = value
 
     return result
 
@@ -158,7 +968,9 @@ def parse_fields(block):
 # DAKIKA ARALIKLARI
 # =========================================================
 
-def is_valid_signal_minute(minute):
+def is_valid_signal_minute(
+    minute
+):
 
     return (
         15 <= minute <= 38
@@ -167,11 +979,9 @@ def is_valid_signal_minute(minute):
     )
 
 
-def is_tracking_minute(minute):
-
-    # Sinyalden 5 dakika once istatistik gecmisi toplamaya basla.
-    # Boylece 15 veya 55. dakikada eski mac geneli degil,
-    # son 5 dakika hareketi kontrol edilebilir.
+def is_tracking_minute(
+    minute
+):
 
     return (
         10 <= minute <= 38
@@ -181,75 +991,17 @@ def is_tracking_minute(minute):
 
 
 # =========================================================
-# TELEGRAM
-# =========================================================
-
-def send_telegram(message):
-
-    if not BOT_TOKEN or not CHAT_ID:
-
-        print(
-            "TELEGRAM TOKEN/CHAT ID YOK",
-            flush=True
-        )
-
-        return False
-
-    try:
-
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{BOT_TOKEN}/sendMessage"
-        )
-
-        response = requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": message
-            },
-            timeout=20
-        )
-
-        print(
-            "TELEGRAM HTTP:",
-            response.status_code,
-            flush=True
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "TELEGRAM HATA:",
-                response.text[:300],
-                flush=True
-            )
-
-            return False
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "TELEGRAM HATA:",
-            type(e).__name__,
-            str(e),
-            flush=True
-        )
-
-        return False
-
-
-# =========================================================
 # DAKIKA
 # =========================================================
 
 def calculate_minute(fields):
 
     ba = clean(
-        fields.get("BA")
+        fields.get(
+            "BA"
+        )
     )
+
 
     if ba:
 
@@ -264,7 +1016,11 @@ def calculate_minute(fields):
                 m.group()
             )
 
-            if 1 <= minute <= 130:
+            if (
+                1
+                <= minute
+                <= 130
+            ):
                 return minute
 
 
@@ -279,11 +1035,14 @@ def calculate_minute(fields):
     for key in possible_keys:
 
         value = clean(
-            fields.get(key)
+            fields.get(
+                key
+            )
         )
 
         if not value:
             continue
+
 
         m = re.fullmatch(
             r"\d{1,3}",
@@ -293,15 +1052,25 @@ def calculate_minute(fields):
         if not m:
             continue
 
-        minute = int(value)
 
-        if 1 <= minute <= 130:
+        minute = int(
+            value
+        )
+
+        if (
+            1
+            <= minute
+            <= 130
+        ):
             return minute
 
 
     start_timestamp = number(
-        fields.get("AD")
+        fields.get(
+            "AD"
+        )
     )
+
 
     if start_timestamp:
 
@@ -318,7 +1087,9 @@ def calculate_minute(fields):
             )
 
             period = clean(
-                fields.get("BC")
+                fields.get(
+                    "BC"
+                )
             )
 
             period_normal = (
@@ -326,6 +1097,7 @@ def calculate_minute(fields):
                 if period
                 else ""
             )
+
 
             if elapsed <= 55:
 
@@ -337,9 +1109,11 @@ def calculate_minute(fields):
                     45
                 )
 
+
             calculated = (
                 elapsed - 15
             )
+
 
             if calculated < 46:
                 calculated = 46
@@ -347,17 +1121,23 @@ def calculate_minute(fields):
             if calculated > 90:
                 calculated = 90
 
+
             if (
-                "half" in period_normal
+                "half"
+                in period_normal
                 and
-                "time" in period_normal
+                "time"
+                in period_normal
             ):
                 return 45
 
+
             return calculated
+
 
         except Exception:
             pass
+
 
     return 0
 
@@ -372,16 +1152,20 @@ def get_live_matches():
         LIVE_FEED_URL,
         params={
             "_": int(
-                time.time() * 1000
+                time.time()
+                * 1000
             )
         },
         headers={
             **HEADERS,
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache"
+            "Cache-Control":
+                "no-cache",
+            "Pragma":
+                "no-cache"
         },
         timeout=20
     )
+
 
     print(
         "LIVE HTTP:",
@@ -389,9 +1173,11 @@ def get_live_matches():
         flush=True
     )
 
+
     response.raise_for_status()
 
     raw = response.text
+
 
     print(
         "LIVE LENGTH:",
@@ -399,69 +1185,105 @@ def get_live_matches():
         flush=True
     )
 
+
     matches = []
 
 
-    for block in raw.split("~"):
+    for block in raw.split(
+        "~"
+    ):
 
         fields = parse_fields(
             block
         )
 
+
         match_id = clean(
-            fields.get("AA")
+            fields.get(
+                "AA"
+            )
         )
 
         if not match_id:
             continue
 
+
         home = clean(
-            fields.get("AE")
+            fields.get(
+                "AE"
+            )
         )
 
         away = clean(
-            fields.get("AF")
+            fields.get(
+                "AF"
+            )
         )
 
-        if not home or not away:
+
+        if (
+            not home
+            or not away
+        ):
             continue
 
+
         status = clean(
-            fields.get("AB")
+            fields.get(
+                "AB"
+            )
         )
+
 
         if status != "2":
             continue
+
 
         minute = calculate_minute(
             fields
         )
 
+
         matches.append(
             {
-                "id": match_id,
-                "home": home,
-                "away": away,
+                "id":
+                    match_id,
 
-                "home_score": int_value(
-                    fields.get("AG")
-                ),
+                "home":
+                    home,
 
-                "away_score": int_value(
-                    fields.get("AH")
-                ),
+                "away":
+                    away,
 
-                "minute": minute,
+                "home_score":
+                    int_value(
+                        fields.get(
+                            "AG"
+                        )
+                    ),
 
-                "start": fields.get(
-                    "AD"
-                ),
+                "away_score":
+                    int_value(
+                        fields.get(
+                            "AH"
+                        )
+                    ),
 
-                "period": fields.get(
-                    "BC"
-                ),
+                "minute":
+                    minute,
+
+                "start":
+                    fields.get(
+                        "AD"
+                    ),
+
+                "period":
+                    fields.get(
+                        "BC"
+                    ),
             }
         )
+
 
     return matches
 
@@ -470,7 +1292,9 @@ def get_live_matches():
 # SINYALDEN ONCE SKORU TEKRAR KONTROL ET
 # =========================================================
 
-def get_fresh_match_state(match_id):
+def get_fresh_match_state(
+    match_id
+):
 
     try:
 
@@ -478,16 +1302,20 @@ def get_fresh_match_state(match_id):
             LIVE_FEED_URL,
             params={
                 "_": int(
-                    time.time() * 1000
+                    time.time()
+                    * 1000
                 )
             },
             headers={
                 **HEADERS,
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
+                "Cache-Control":
+                    "no-cache",
+                "Pragma":
+                    "no-cache"
             },
             timeout=20
         )
+
 
         print(
             "SON KONTROL HTTP:",
@@ -495,52 +1323,82 @@ def get_fresh_match_state(match_id):
             flush=True
         )
 
-        if response.status_code != 200:
+
+        if (
+            response.status_code
+            != 200
+        ):
             return None
+
 
         raw = response.text
 
 
-        for block in raw.split("~"):
+        for block in raw.split(
+            "~"
+        ):
 
             fields = parse_fields(
                 block
             )
 
+
             current_id = clean(
-                fields.get("AA")
+                fields.get(
+                    "AA"
+                )
             )
 
-            if current_id != match_id:
+
+            if (
+                current_id
+                != match_id
+            ):
                 continue
 
+
             status = clean(
-                fields.get("AB")
+                fields.get(
+                    "AB"
+                )
             )
+
 
             if status != "2":
 
                 return {
-                    "live": False
+                    "live":
+                        False
                 }
 
+
             return {
-                "live": True,
+                "live":
+                    True,
 
-                "home_score": int_value(
-                    fields.get("AG")
-                ),
+                "home_score":
+                    int_value(
+                        fields.get(
+                            "AG"
+                        )
+                    ),
 
-                "away_score": int_value(
-                    fields.get("AH")
-                ),
+                "away_score":
+                    int_value(
+                        fields.get(
+                            "AH"
+                        )
+                    ),
 
-                "minute": calculate_minute(
-                    fields
-                )
+                "minute":
+                    calculate_minute(
+                        fields
+                    )
             }
 
+
         return None
+
 
     except Exception as e:
 
@@ -594,7 +1452,9 @@ def normalize_name(text):
         "ç": "c",
     }
 
-    for old, new in replacements.items():
+    for old, new in (
+        replacements.items()
+    ):
 
         text = text.replace(
             old,
@@ -661,39 +1521,81 @@ def save_stat(
     away
 ):
 
-    h = number(home)
-    a = number(away)
+    h = number(
+        home
+    )
 
-    if h is None or a is None:
+    a = number(
+        away
+    )
+
+
+    if (
+        h is None
+        or
+        a is None
+    ):
         return
+
 
     if kind == "xg":
 
-        stats["xg_home"] = h
-        stats["xg_away"] = a
+        stats[
+            "xg_home"
+        ] = h
+
+        stats[
+            "xg_away"
+        ] = a
+
 
     elif kind == "shots":
 
-        stats["shots_home"] = h
-        stats["shots_away"] = a
+        stats[
+            "shots_home"
+        ] = h
+
+        stats[
+            "shots_away"
+        ] = a
+
 
     elif kind == "sot":
 
-        stats["sot_home"] = h
-        stats["sot_away"] = a
+        stats[
+            "sot_home"
+        ] = h
+
+        stats[
+            "sot_away"
+        ] = a
+
 
     elif kind == "big":
 
-        stats["big_home"] = h
-        stats["big_away"] = a
+        stats[
+            "big_home"
+        ] = h
+
+        stats[
+            "big_away"
+        ] = a
+
 
     elif kind == "corners":
 
-        stats["corners_home"] = h
-        stats["corners_away"] = a
+        stats[
+            "corners_home"
+        ] = h
+
+        stats[
+            "corners_away"
+        ] = a
 
 
-def get_stats(match_id):
+def get_stats(
+    match_id
+):
 
     stats = empty_stats()
 
@@ -702,22 +1604,27 @@ def get_stats(match_id):
         + match_id
     )
 
+
     try:
 
         response = session.get(
             url,
             params={
                 "_": int(
-                    time.time() * 1000
+                    time.time()
+                    * 1000
                 )
             },
             headers={
                 **HEADERS,
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
+                "Cache-Control":
+                    "no-cache",
+                "Pragma":
+                    "no-cache"
             },
             timeout=20
         )
+
 
         print(
             "STAT HTTP:",
@@ -727,17 +1634,26 @@ def get_stats(match_id):
 
         print(
             "STAT LENGTH:",
-            len(response.text),
+            len(
+                response.text
+            ),
             flush=True
         )
 
-        if response.status_code != 200:
+
+        if (
+            response.status_code
+            != 200
+        ):
             return stats
+
 
         raw = response.text
 
+
         if not raw.strip():
             return stats
+
 
         current_name = None
         current_home = None
@@ -750,12 +1666,15 @@ def get_stats(match_id):
             nonlocal current_home
             nonlocal current_away
 
+
             if not current_name:
                 return
+
 
             kind = stat_kind(
                 current_name
             )
+
 
             if kind:
 
@@ -767,23 +1686,30 @@ def get_stats(match_id):
                 )
 
 
-        for part in raw.split("¬"):
+        for part in raw.split(
+            "¬"
+        ):
 
             if "÷" not in part:
                 continue
+
 
             key, value = part.split(
                 "÷",
                 1
             )
 
-            key = key.lstrip(
-                "~"
-            ).strip()
+
+            key = (
+                key
+                .lstrip("~")
+                .strip()
+            )
 
             value = clean(
                 value
             )
+
 
             if key == "SG":
 
@@ -793,9 +1719,11 @@ def get_stats(match_id):
                 current_home = None
                 current_away = None
 
+
             elif key == "SH":
 
                 current_home = value
+
 
             elif key == "SI":
 
@@ -805,6 +1733,7 @@ def get_stats(match_id):
         flush_current()
 
         return stats
+
 
     except Exception as e:
 
@@ -829,9 +1758,19 @@ def stat_total(
 ):
 
     return (
-        (stats.get(home_key) or 0)
+        (
+            stats.get(
+                home_key
+            )
+            or 0
+        )
         +
-        (stats.get(away_key) or 0)
+        (
+            stats.get(
+                away_key
+            )
+            or 0
+        )
     )
 
 
@@ -841,40 +1780,46 @@ def make_history_snapshot(
 ):
 
     return {
-        "time": time.time(),
+        "time":
+            time.time(),
 
         "minute":
             match["minute"],
 
-        "xg": stat_total(
-            stats,
-            "xg_home",
-            "xg_away"
-        ),
+        "xg":
+            stat_total(
+                stats,
+                "xg_home",
+                "xg_away"
+            ),
 
-        "shots": stat_total(
-            stats,
-            "shots_home",
-            "shots_away"
-        ),
+        "shots":
+            stat_total(
+                stats,
+                "shots_home",
+                "shots_away"
+            ),
 
-        "sot": stat_total(
-            stats,
-            "sot_home",
-            "sot_away"
-        ),
+        "sot":
+            stat_total(
+                stats,
+                "sot_home",
+                "sot_away"
+            ),
 
-        "big": stat_total(
-            stats,
-            "big_home",
-            "big_away"
-        ),
+        "big":
+            stat_total(
+                stats,
+                "big_home",
+                "big_away"
+            ),
 
-        "corners": stat_total(
-            stats,
-            "corners_home",
-            "corners_away"
-        ),
+        "corners":
+            stat_total(
+                stats,
+                "corners_home",
+                "corners_away"
+            ),
     }
 
 
@@ -891,13 +1836,17 @@ def find_history_baseline(
         for item in history
         if (
             minimum_age
-            <= now - item["time"]
-            <= maximum_age
+            <=
+            now - item["time"]
+            <=
+            maximum_age
         )
     ]
 
+
     if not candidates:
         return None
+
 
     return min(
         candidates,
@@ -920,37 +1869,51 @@ def calculate_recent_pressure(
     stats
 ):
 
-    match_id = match["id"]
+    match_id = match[
+        "id"
+    ]
+
     now = time.time()
+
 
     current = make_history_snapshot(
         match,
         stats
     )
 
+
     history = match_history.setdefault(
         match_id,
         []
     )
 
+
     history[:] = [
         item
         for item in history
-        if now - item["time"] <= 1200
+        if (
+            now
+            - item["time"]
+            <= 1200
+        )
     ]
 
-    # Genel baski bonusu icin yaklasik 5-10 dakika geriye bak.
-    baseline = find_history_baseline(
-        history,
-        now,
-        300,
-        900,
-        600
+
+    baseline = (
+        find_history_baseline(
+            history,
+            now,
+            300,
+            900,
+            600
+        )
     )
+
 
     history.append(
         current
     )
+
 
     if baseline is None:
         return 0, None
@@ -990,7 +1953,6 @@ def calculate_recent_pressure(
     pressure = 0
 
 
-    # xG
     if delta_xg >= 0.70:
         pressure += 12
 
@@ -1007,7 +1969,6 @@ def calculate_recent_pressure(
         pressure += 3
 
 
-    # Sut
     if delta_shots >= 7:
         pressure += 11
 
@@ -1024,7 +1985,6 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # Isabetli sut
     if delta_sot >= 4:
         pressure += 13
 
@@ -1038,7 +1998,6 @@ def calculate_recent_pressure(
         pressure += 4
 
 
-    # Buyuk sans
     if delta_big >= 2:
         pressure += 7
 
@@ -1046,7 +2005,6 @@ def calculate_recent_pressure(
         pressure += 4
 
 
-    # Korner
     if delta_corners >= 4:
         pressure += 4
 
@@ -1057,22 +2015,26 @@ def calculate_recent_pressure(
         pressure += 2
 
 
-    # Kombinasyonlar
     if (
         delta_shots >= 4
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 5
+
 
     if (
         delta_xg >= 0.35
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 5
 
+
     if (
         delta_big >= 1
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 4
 
@@ -1084,48 +2046,60 @@ def calculate_recent_pressure(
 
 
     details = {
-        "minutes": max(
-            1,
-            match["minute"]
-            - baseline["minute"]
-        ),
+        "minutes":
+            max(
+                1,
+                match["minute"]
+                - baseline["minute"]
+            ),
 
-        "xg": round(
-            delta_xg,
-            2
-        ),
+        "xg":
+            round(
+                delta_xg,
+                2
+            ),
 
-        "shots": int(
-            delta_shots
-        ),
+        "shots":
+            int(
+                delta_shots
+            ),
 
-        "sot": int(
-            delta_sot
-        ),
+        "sot":
+            int(
+                delta_sot
+            ),
 
-        "big": int(
-            delta_big
-        ),
+        "big":
+            int(
+                delta_big
+            ),
 
-        "corners": int(
-            delta_corners
-        ),
+        "corners":
+            int(
+                delta_corners
+            ),
     }
 
 
-    return pressure, details
+    return (
+        pressure,
+        details
+    )
 
 
 # =========================================================
-# YENI: SON 5 DAKIKA TEMPO KONTROLU
+# SON 5 DAKIKA TEMPO KONTROLU
 # =========================================================
 
-def calculate_tempo_state(match_id):
+def calculate_tempo_state(
+    match_id
+):
 
     history = match_history.get(
         match_id,
         []
     )
+
 
     if len(history) < 2:
 
@@ -1138,17 +2112,23 @@ def calculate_tempo_state(match_id):
         }
 
 
-    current = history[-1]
-    now = current["time"]
+    current = history[
+        -1
+    ]
+
+    now = current[
+        "time"
+    ]
 
 
-    # Yaklasik 5 dakika onceki veri
-    short_baseline = find_history_baseline(
-        history[:-1],
-        now,
-        180,
-        420,
-        300
+    short_baseline = (
+        find_history_baseline(
+            history[:-1],
+            now,
+            180,
+            420,
+            300
+        )
     )
 
 
@@ -1163,7 +2143,6 @@ def calculate_tempo_state(match_id):
         }
 
 
-    # Son yaklasik 5 dakika
     recent_xg = max(
         0,
         current["xg"]
@@ -1198,7 +2177,6 @@ def calculate_tempo_state(match_id):
     tempo_score = 0
 
 
-    # Son 5 dk xG
     if recent_xg >= 0.35:
         tempo_score += 3
 
@@ -1209,7 +2187,6 @@ def calculate_tempo_state(match_id):
         tempo_score += 1
 
 
-    # Son 5 dk sut
     if recent_shots >= 4:
         tempo_score += 3
 
@@ -1220,7 +2197,6 @@ def calculate_tempo_state(match_id):
         tempo_score += 1
 
 
-    # Son 5 dk isabetli
     if recent_sot >= 2:
         tempo_score += 3
 
@@ -1228,12 +2204,10 @@ def calculate_tempo_state(match_id):
         tempo_score += 2
 
 
-    # Son 5 dk buyuk sans
     if recent_big >= 1:
         tempo_score += 2
 
 
-    # Son 5 dk korner
     if recent_corners >= 3:
         tempo_score += 2
 
@@ -1241,38 +2215,34 @@ def calculate_tempo_state(match_id):
         tempo_score += 1
 
 
-    # =====================================================
-    # MAC TAMAMEN DURMUS MU?
-    # =====================================================
-
     dead_tempo = (
         recent_xg < 0.08
-        and recent_shots < 2
-        and recent_sot < 1
-        and recent_big < 1
-        and recent_corners < 2
+        and
+        recent_shots < 2
+        and
+        recent_sot < 1
+        and
+        recent_big < 1
+        and
+        recent_corners < 2
     )
 
 
-    # =====================================================
-    # ONCEKI 5 DAKIKAYA GORE TEMPO DUSTU MU?
-    # =====================================================
-
-    previous_baseline = find_history_baseline(
-        history[:-1],
-        now,
-        480,
-        720,
-        600
+    previous_baseline = (
+        find_history_baseline(
+            history[:-1],
+            now,
+            480,
+            720,
+            600
+        )
     )
 
 
     tempo_dropped = False
     previous_intensity = None
-    recent_intensity = None
 
 
-    # Aktiviteyi tek sayida karsilastirmak icin agirlikli tempo
     recent_intensity = (
         (recent_xg * 10)
         +
@@ -1332,74 +2302,89 @@ def calculate_tempo_state(match_id):
         )
 
 
-        # Onceki 5 dakika hareketliydi,
-        # simdiki 5 dakika aktivitesi %45'in altina dustuyse
-        # tempo dususu kabul edilir.
-
         if (
             previous_intensity >= 4.0
             and
             recent_intensity
             <
-            previous_intensity * 0.45
+            previous_intensity
+            * 0.45
         ):
+
             tempo_dropped = True
 
 
     tempo_ok = (
-        tempo_score >= TEMPO_MIN_SCORE
-        and not dead_tempo
-        and not tempo_dropped
+        tempo_score
+        >= TEMPO_MIN_SCORE
+        and
+        not dead_tempo
+        and
+        not tempo_dropped
     )
 
 
     details = {
-        "minutes": max(
-            1,
-            current["minute"]
-            - short_baseline["minute"]
-        ),
+        "minutes":
+            max(
+                1,
+                current["minute"]
+                - short_baseline["minute"]
+            ),
 
-        "xg": round(
-            recent_xg,
-            2
-        ),
-
-        "shots": int(
-            recent_shots
-        ),
-
-        "sot": int(
-            recent_sot
-        ),
-
-        "big": int(
-            recent_big
-        ),
-
-        "corners": int(
-            recent_corners
-        ),
-
-        "tempo_score": tempo_score,
-
-        "dead": dead_tempo,
-
-        "dropped": tempo_dropped,
-
-        "recent_intensity": round(
-            recent_intensity,
-            2
-        ),
-
-        "previous_intensity": (
+        "xg":
             round(
-                previous_intensity,
+                recent_xg,
                 2
+            ),
+
+        "shots":
+            int(
+                recent_shots
+            ),
+
+        "sot":
+            int(
+                recent_sot
+            ),
+
+        "big":
+            int(
+                recent_big
+            ),
+
+        "corners":
+            int(
+                recent_corners
+            ),
+
+        "tempo_score":
+            tempo_score,
+
+        "dead":
+            dead_tempo,
+
+        "dropped":
+            tempo_dropped,
+
+        "recent_intensity":
+            round(
+                recent_intensity,
+                2
+            ),
+
+        "previous_intensity":
+            (
+                round(
+                    previous_intensity,
+                    2
+                )
+                if (
+                    previous_intensity
+                    is not None
+                )
+                else None
             )
-            if previous_intensity is not None
-            else None
-        )
     }
 
 
@@ -1416,9 +2401,13 @@ def calculate_tempo_state(match_id):
 # TEMPO LOGU
 # =========================================================
 
-def print_tempo(tempo):
+def print_tempo(
+    tempo
+):
 
-    if not tempo["ready"]:
+    if not tempo[
+        "ready"
+    ]:
 
         print(
             "TEMPO GECMISI TOPLANIYOR...",
@@ -1428,85 +2417,123 @@ def print_tempo(tempo):
         return
 
 
-    d = tempo["details"]
+    d = tempo[
+        "details"
+    ]
 
 
     print(
         "SON TEMPO:",
-        str(d["minutes"]) + " DK",
+        str(
+            d["minutes"]
+        )
+        + " DK",
         flush=True
     )
 
     print(
         "TEMPO xG:",
-        "+" + str(d["xg"]),
+        "+"
+        + str(
+            d["xg"]
+        ),
         flush=True
     )
 
     print(
         "TEMPO SUT:",
-        "+" + str(d["shots"]),
+        "+"
+        + str(
+            d["shots"]
+        ),
         flush=True
     )
 
     print(
         "TEMPO ISABETLI:",
-        "+" + str(d["sot"]),
+        "+"
+        + str(
+            d["sot"]
+        ),
         flush=True
     )
 
     print(
         "TEMPO BUYUK SANS:",
-        "+" + str(d["big"]),
+        "+"
+        + str(
+            d["big"]
+        ),
         flush=True
     )
 
     print(
         "TEMPO KORNER:",
-        "+" + str(d["corners"]),
+        "+"
+        + str(
+            d["corners"]
+        ),
         flush=True
     )
 
     print(
         "TEMPO PUANI:",
-        str(d["tempo_score"]),
+        str(
+            d["tempo_score"]
+        ),
         "/",
         TEMPO_MIN_SCORE,
         flush=True
     )
 
 
-    if d["previous_intensity"] is not None:
+    if (
+        d["previous_intensity"]
+        is not None
+    ):
 
         print(
             "TEMPO SIDDET:",
-            d["previous_intensity"],
+            d[
+                "previous_intensity"
+            ],
             "->",
-            d["recent_intensity"],
+            d[
+                "recent_intensity"
+            ],
             flush=True
         )
 
 
-    if d["dead"]:
+    if d[
+        "dead"
+    ]:
 
         print(
             "TEMPO DURDU",
             flush=True
         )
 
-    elif d["dropped"]:
+
+    elif d[
+        "dropped"
+    ]:
 
         print(
             "TEMPO DUSTU",
             flush=True
         )
 
-    elif tempo["ok"]:
+
+    elif tempo[
+        "ok"
+    ]:
 
         print(
             "TEMPO AKTIF",
             flush=True
         )
+
 
     else:
 
@@ -1526,47 +2553,103 @@ def calculate_goal_score(
     recent_pressure=0
 ):
 
-    minute = match["minute"]
+    minute = match[
+        "minute"
+    ]
+
 
     if minute <= 0:
         return 0
 
 
     xg = (
-        (stats["xg_home"] or 0)
+        (
+            stats[
+                "xg_home"
+            ]
+            or 0
+        )
         +
-        (stats["xg_away"] or 0)
+        (
+            stats[
+                "xg_away"
+            ]
+            or 0
+        )
     )
+
 
     shots = (
-        (stats["shots_home"] or 0)
+        (
+            stats[
+                "shots_home"
+            ]
+            or 0
+        )
         +
-        (stats["shots_away"] or 0)
+        (
+            stats[
+                "shots_away"
+            ]
+            or 0
+        )
     )
+
 
     sot = (
-        (stats["sot_home"] or 0)
+        (
+            stats[
+                "sot_home"
+            ]
+            or 0
+        )
         +
-        (stats["sot_away"] or 0)
+        (
+            stats[
+                "sot_away"
+            ]
+            or 0
+        )
     )
+
 
     big = (
-        (stats["big_home"] or 0)
+        (
+            stats[
+                "big_home"
+            ]
+            or 0
+        )
         +
-        (stats["big_away"] or 0)
+        (
+            stats[
+                "big_away"
+            ]
+            or 0
+        )
     )
 
+
     corners = (
-        (stats["corners_home"] or 0)
+        (
+            stats[
+                "corners_home"
+            ]
+            or 0
+        )
         +
-        (stats["corners_away"] or 0)
+        (
+            stats[
+                "corners_away"
+            ]
+            or 0
+        )
     )
 
 
     score = 0
 
 
-    # xG
     if xg >= 3.0:
         score += 30
 
@@ -1589,7 +2672,6 @@ def calculate_goal_score(
         score += 5
 
 
-    # Isabetli sut
     if sot >= 10:
         score += 25
 
@@ -1609,7 +2691,6 @@ def calculate_goal_score(
         score += 6
 
 
-    # Sut
     if shots >= 25:
         score += 18
 
@@ -1629,7 +2710,6 @@ def calculate_goal_score(
         score += 3
 
 
-    # Buyuk sans
     if big >= 5:
         score += 15
 
@@ -1646,7 +2726,6 @@ def calculate_goal_score(
         score += 4
 
 
-    # Korner
     if corners >= 12:
         score += 7
 
@@ -1660,7 +2739,6 @@ def calculate_goal_score(
         score += 2
 
 
-    # Dakika
     if minute >= 86:
         score += 10
 
@@ -1680,40 +2758,52 @@ def calculate_goal_score(
         score += 2
 
 
-    # Dusuk skor bonusu
     total_goals = (
-        match["home_score"]
+        match[
+            "home_score"
+        ]
         +
-        match["away_score"]
+        match[
+            "away_score"
+        ]
     )
 
 
     if (
         total_goals == 0
-        and minute >= 50
+        and
+        minute >= 50
     ):
+
         score += 5
+
 
     elif (
         total_goals == 1
-        and minute >= 55
+        and
+        minute >= 55
     ):
+
         score += 3
 
 
-    # Guclu baski kombinasyonlari
     if (
         xg >= 1.5
-        and sot >= 5
-        and shots >= 14
+        and
+        sot >= 5
+        and
+        shots >= 14
     ):
+
         score += 5
 
 
     if (
         big >= 2
-        and sot >= 5
+        and
+        sot >= 5
     ):
+
         score += 3
 
 
@@ -1721,7 +2811,9 @@ def calculate_goal_score(
 
 
     return min(
-        int(score),
+        int(
+            score
+        ),
         100
     )
 
@@ -1730,16 +2822,24 @@ def calculate_goal_score(
 # MESAJ
 # =========================================================
 
-def display_value(value):
+def display_value(
+    value
+):
 
     if value is None:
         return "VERI YOK"
 
-    if float(value).is_integer():
+
+    if float(
+        value
+    ).is_integer():
 
         return str(
-            int(value)
+            int(
+                value
+            )
         )
+
 
     return str(
         round(
@@ -1795,7 +2895,7 @@ def make_signal_message(
 
 
 # =========================================================
-# ANA DONGU
+# BASLANGIC
 # =========================================================
 
 print(
@@ -1811,7 +2911,10 @@ print(
 
 print(
     "ADAY DOGRULAMA:",
-    str(SIGNAL_CONFIRM_SECONDS) + " SN",
+    str(
+        SIGNAL_CONFIRM_SECONDS
+    )
+    + " SN",
     flush=True
 )
 
@@ -1843,6 +2946,32 @@ print(
     flush=True
 )
 
+print(
+    "DATABASE URL:",
+    "VAR"
+    if DATABASE_URL
+    else "YOK",
+    flush=True
+)
+
+
+# PostgreSQL tablosunu hazirla
+init_database()
+
+
+# Telegram komut dinleyicisini
+# ana gol taramasindan bagimsiz calistir.
+command_thread = threading.Thread(
+    target=telegram_command_listener,
+    daemon=True
+)
+
+command_thread.start()
+
+
+# =========================================================
+# ANA DONGU
+# =========================================================
 
 while True:
 
@@ -1863,7 +2992,9 @@ while True:
 
         for match in matches:
 
-            match_id = match["id"]
+            match_id = match[
+                "id"
+            ]
 
             active_match_ids.add(
                 match_id
@@ -1875,13 +3006,19 @@ while True:
             # =================================================
 
             current_score = (
-                match["home_score"],
-                match["away_score"]
+                match[
+                    "home_score"
+                ],
+                match[
+                    "away_score"
+                ]
             )
 
 
-            previous_score = last_scores.get(
-                match_id
+            previous_score = (
+                last_scores.get(
+                    match_id
+                )
             )
 
 
@@ -1893,6 +3030,7 @@ while True:
                 last_scores[
                     match_id
                 ] = current_score
+
 
             else:
 
@@ -1909,7 +3047,11 @@ while True:
                 )
 
 
-                if current_total > previous_total:
+                if (
+                    current_total
+                    >
+                    previous_total
+                ):
 
                     goal_just_happened = True
 
@@ -1928,12 +3070,10 @@ while True:
                         None
                     )
 
-
                     sent_signals.pop(
                         match_id,
                         None
                     )
-
 
                     pending_signals.pop(
                         match_id,
@@ -1978,10 +3118,15 @@ while True:
             # =================================================
 
             if not is_tracking_minute(
-                match["minute"]
+                match[
+                    "minute"
+                ]
             ):
 
-                if match_id in pending_signals:
+                if (
+                    match_id
+                    in pending_signals
+                ):
 
                     print(
                         "ADAY SINYAL IPTAL: "
@@ -2018,7 +3163,8 @@ while True:
                 "DAKIKA:",
                 str(
                     match["minute"]
-                ) + "'",
+                )
+                + "'",
                 flush=True
             )
 
@@ -2087,7 +3233,7 @@ while True:
 
 
             # =================================================
-            # BASKI GECMISI
+            # BASKI
             # =================================================
 
             recent_pressure, pressure_details = (
@@ -2196,11 +3342,10 @@ while True:
             )
 
 
-            # 10-14 ve 50-54 sadece gecmis toplama bolgesi.
-            # Bu dakikalarda Telegram sinyali yok.
-
             if not is_valid_signal_minute(
-                match["minute"]
+                match[
+                    "minute"
+                ]
             ):
 
                 print(
@@ -2216,16 +3361,20 @@ while True:
             # GOL PUANI
             # =================================================
 
-            goal_score = calculate_goal_score(
-                match,
-                stats,
-                recent_pressure
+            goal_score = (
+                calculate_goal_score(
+                    match,
+                    stats,
+                    recent_pressure
+                )
             )
 
 
             print(
                 "GOL PUANI:",
-                str(goal_score)
+                str(
+                    goal_score
+                )
                 + "/100",
                 flush=True
             )
@@ -2283,12 +3432,19 @@ while True:
 
 
             # =================================================
-            # 68 ALTINA DUSERSE ADAYI IPTAL ET
+            # 68 ALTI
             # =================================================
 
-            if goal_score < SIGNAL_THRESHOLD:
+            if (
+                goal_score
+                <
+                SIGNAL_THRESHOLD
+            ):
 
-                if match_id in pending_signals:
+                if (
+                    match_id
+                    in pending_signals
+                ):
 
                     print(
                         "ADAY SINYAL IPTAL: "
@@ -2306,10 +3462,12 @@ while True:
 
 
             # =================================================
-            # TEMPO GECMISI HAZIR MI?
+            # TEMPO GECMISI
             # =================================================
 
-            if not tempo["ready"]:
+            if not tempo[
+                "ready"
+            ]:
 
                 print(
                     "SINYAL YOK: "
@@ -2325,17 +3483,16 @@ while True:
                 continue
 
 
-            # =================================================
-            # TEMPO AKTIF MI?
-            # =================================================
+            if not tempo[
+                "ok"
+            ]:
 
-            if not tempo["ok"]:
-
-                if tempo["dropped"]:
+                if tempo[
+                    "dropped"
+                ]:
 
                     print(
-                        "SINYAL YOK: "
-                        "TEMPO DUSTU",
+                        "SINYAL YOK: TEMPO DUSTU",
                         flush=True
                     )
 
@@ -2356,13 +3513,12 @@ while True:
 
 
             # =================================================
-            # DAHA ONCE SINYAL GONDERILDI MI?
+            # ONCEKI SINYAL
             # =================================================
 
             previous = sent_signals.get(
                 match_id
             )
-
 
             eligible_for_signal = False
 
@@ -2387,20 +3543,25 @@ while True:
                     - last_minute
                     >= 15
                 ):
+
                     eligible_for_signal = True
 
 
                 if (
                     last_score < 75
-                    and goal_score >= 75
+                    and
+                    goal_score >= 75
                 ):
+
                     eligible_for_signal = True
 
 
                 if (
                     goal_score
-                    >= last_score + 15
+                    >=
+                    last_score + 15
                 ):
+
                     eligible_for_signal = True
 
 
@@ -2415,11 +3576,13 @@ while True:
 
 
             # =================================================
-            # 60 SANIYELIK ADAY SINYAL
+            # ADAY SINYAL
             # =================================================
 
-            pending = pending_signals.get(
-                match_id
+            pending = (
+                pending_signals.get(
+                    match_id
+                )
             )
 
 
@@ -2435,13 +3598,17 @@ while True:
                         current_score,
 
                     "minute":
-                        match["minute"],
+                        match[
+                            "minute"
+                        ],
 
                     "goal_score":
                         goal_score,
 
                     "tempo_score":
-                        tempo["score"]
+                        tempo[
+                            "score"
+                        ]
                 }
 
 
@@ -2473,7 +3640,7 @@ while True:
 
 
             # =================================================
-            # BEKLERKEN SKOR DEGISTI MI?
+            # ADAY SONRASI SKOR DEGISTI MI
             # =================================================
 
             pending_score = pending[
@@ -2481,7 +3648,11 @@ while True:
             ]
 
 
-            if current_score != pending_score:
+            if (
+                current_score
+                !=
+                pending_score
+            ):
 
                 print(
                     "ADAY SINYAL IPTAL: "
@@ -2512,7 +3683,11 @@ while True:
                 )
 
 
-                if current_total > pending_total:
+                if (
+                    current_total
+                    >
+                    pending_total
+                ):
 
                     goal_cooldowns[
                         match_id
@@ -2542,13 +3717,15 @@ while True:
 
 
             # =================================================
-            # 60 SANIYE DOLDU MU?
+            # 60 SANIYE DOLDU MU
             # =================================================
 
             elapsed_candidate = (
                 time.time()
                 -
-                pending["created_at"]
+                pending[
+                    "created_at"
+                ]
             )
 
 
@@ -2563,7 +3740,6 @@ while True:
                     -
                     elapsed_candidate
                 )
-
 
                 print(
                     "ADAY SINYAL BEKLIYOR:",
@@ -2592,8 +3768,10 @@ while True:
             )
 
 
-            fresh = get_fresh_match_state(
-                match_id
+            fresh = (
+                get_fresh_match_state(
+                    match_id
+                )
             )
 
 
@@ -2633,8 +3811,12 @@ while True:
 
 
             fresh_score = (
-                fresh["home_score"],
-                fresh["away_score"]
+                fresh[
+                    "home_score"
+                ],
+                fresh[
+                    "away_score"
+                ]
             )
 
 
@@ -2644,7 +3826,6 @@ while True:
                 pending_score[1]
             )
 
-
             fresh_total = (
                 fresh_score[0]
                 +
@@ -2653,10 +3834,14 @@ while True:
 
 
             # =================================================
-            # BEKLERKEN GOL OLMUS
+            # BEKLERKEN GOL
             # =================================================
 
-            if fresh_total > pending_total:
+            if (
+                fresh_total
+                >
+                pending_total
+            ):
 
                 print(
                     "SINYAL IPTAL: "
@@ -2682,23 +3867,19 @@ while True:
                     None
                 )
 
-
                 sent_signals.pop(
                     match_id,
                     None
                 )
-
 
                 pending_signals.pop(
                     match_id,
                     None
                 )
 
-
                 last_scores[
                     match_id
                 ] = fresh_score
-
 
                 continue
 
@@ -2707,7 +3888,11 @@ while True:
             # SKOR BASKA SEKILDE DEGISTI
             # =================================================
 
-            if fresh_score != pending_score:
+            if (
+                fresh_score
+                !=
+                pending_score
+            ):
 
                 print(
                     "SINYAL IPTAL: "
@@ -2718,17 +3903,14 @@ while True:
                     flush=True
                 )
 
-
                 pending_signals.pop(
                     match_id,
                     None
                 )
 
-
                 last_scores[
                     match_id
                 ] = fresh_score
-
 
                 continue
 
@@ -2754,18 +3936,16 @@ while True:
                     flush=True
                 )
 
-
                 pending_signals.pop(
                     match_id,
                     None
                 )
 
-
                 continue
 
 
             # =================================================
-            # ISTATISTIGI SON KEZ YENILE
+            # SON ISTATISTIK
             # =================================================
 
             print(
@@ -2783,13 +3963,11 @@ while True:
                 "minute"
             ] = fresh_minute
 
-
             match[
                 "home_score"
             ] = fresh[
                 "home_score"
             ]
-
 
             match[
                 "away_score"
@@ -2797,10 +3975,6 @@ while True:
                 "away_score"
             ]
 
-
-            # =================================================
-            # YENI VERIYLE BASKIYI TEKRAR HESAPLA
-            # =================================================
 
             final_recent_pressure, final_pressure_details = (
                 calculate_recent_pressure(
@@ -2810,12 +3984,10 @@ while True:
             )
 
 
-            # =================================================
-            # YENI VERIYLE TEMPOYU TEKRAR HESAPLA
-            # =================================================
-
-            final_tempo = calculate_tempo_state(
-                match_id
+            final_tempo = (
+                calculate_tempo_state(
+                    match_id
+                )
             )
 
 
@@ -2829,7 +4001,9 @@ while True:
             )
 
 
-            if not final_tempo["ready"]:
+            if not final_tempo[
+                "ready"
+            ]:
 
                 print(
                     "SINYAL IPTAL: "
@@ -2845,9 +4019,13 @@ while True:
                 continue
 
 
-            if not final_tempo["ok"]:
+            if not final_tempo[
+                "ok"
+            ]:
 
-                if final_tempo["dropped"]:
+                if final_tempo[
+                    "dropped"
+                ]:
 
                     print(
                         "SINYAL IPTAL: "
@@ -2872,7 +4050,7 @@ while True:
 
 
             # =================================================
-            # PUANI YENI ISTATISTIK + YENI BASKIYLA HESAPLA
+            # SON GOL PUANI
             # =================================================
 
             final_goal_score = (
@@ -2894,10 +4072,6 @@ while True:
             )
 
 
-            # =================================================
-            # SON PUAN DA 68+ OLMALI
-            # =================================================
-
             if (
                 final_goal_score
                 <
@@ -2911,18 +4085,16 @@ while True:
                     flush=True
                 )
 
-
                 pending_signals.pop(
                     match_id,
                     None
                 )
 
-
                 continue
 
 
             # =================================================
-            # TELEGRAM
+            # TELEGRAM - BUTUN AKTIF KULLANICILAR
             # =================================================
 
             message = (
@@ -2967,7 +4139,7 @@ while True:
 
 
                 print(
-                    "SINYAL TELEGRAMA GONDERILDI",
+                    "SINYAL AKTIF KULLANICILARA GONDERILDI",
                     flush=True
                 )
 
@@ -2979,14 +4151,18 @@ while True:
 
 
         # =================================================
-        # BITEN MACLARIN VERILERINI TEMIZLE
+        # BITEN MACLARI TEMIZLE
         # =================================================
 
         for old_id in list(
             match_history.keys()
         ):
 
-            if old_id not in active_match_ids:
+            if (
+                old_id
+                not in
+                active_match_ids
+            ):
 
                 match_history.pop(
                     old_id,
@@ -2998,7 +4174,11 @@ while True:
             sent_signals.keys()
         ):
 
-            if old_id not in active_match_ids:
+            if (
+                old_id
+                not in
+                active_match_ids
+            ):
 
                 sent_signals.pop(
                     old_id,
@@ -3010,7 +4190,11 @@ while True:
             last_scores.keys()
         ):
 
-            if old_id not in active_match_ids:
+            if (
+                old_id
+                not in
+                active_match_ids
+            ):
 
                 last_scores.pop(
                     old_id,
@@ -3022,7 +4206,11 @@ while True:
             goal_cooldowns.keys()
         ):
 
-            if old_id not in active_match_ids:
+            if (
+                old_id
+                not in
+                active_match_ids
+            ):
 
                 goal_cooldowns.pop(
                     old_id,
@@ -3034,7 +4222,11 @@ while True:
             pending_signals.keys()
         ):
 
-            if old_id not in active_match_ids:
+            if (
+                old_id
+                not in
+                active_match_ids
+            ):
 
                 pending_signals.pop(
                     old_id,
