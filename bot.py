@@ -12,8 +12,15 @@ import psycopg2
 # =========================================================
 
 POLL_SECONDS = 60
+
 SIGNAL_THRESHOLD = 68
-SIGNAL_CONFIRM_SECONDS = 60
+
+# 68-74 arasi daha uzun bekle
+NORMAL_CONFIRM_SECONDS = 90
+
+# 75+ cok guclu sinyal
+STRONG_CONFIRM_SECONDS = 60
+
 GOAL_COOLDOWN_SECONDS = 300
 TEMPO_MIN_SCORE = 4
 
@@ -1550,6 +1557,245 @@ def get_stats(
 
 
 # =========================================================
+# ADAY OLUSTUKTAN SONRA YENI HUCUM VAR MI?
+# =========================================================
+
+def metric_total_or_none(
+    stats,
+    home_key,
+    away_key
+):
+
+    home = stats.get(
+        home_key
+    )
+
+    away = stats.get(
+        away_key
+    )
+
+    if (
+        home is None
+        and
+        away is None
+    ):
+        return None
+
+    return (
+        (home or 0)
+        +
+        (away or 0)
+    )
+
+
+def make_candidate_stats_snapshot(
+    stats
+):
+
+    return {
+        "xg":
+            metric_total_or_none(
+                stats,
+                "xg_home",
+                "xg_away"
+            ),
+
+        "shots":
+            metric_total_or_none(
+                stats,
+                "shots_home",
+                "shots_away"
+            ),
+
+        "sot":
+            metric_total_or_none(
+                stats,
+                "sot_home",
+                "sot_away"
+            ),
+
+        "big":
+            metric_total_or_none(
+                stats,
+                "big_home",
+                "big_away"
+            ),
+
+        "corners":
+            metric_total_or_none(
+                stats,
+                "corners_home",
+                "corners_away"
+            ),
+    }
+
+
+def stat_delta(
+    old_value,
+    new_value
+):
+
+    if (
+        old_value is None
+        or
+        new_value is None
+    ):
+        return 0
+
+    return max(
+        0,
+        new_value
+        - old_value
+    )
+
+
+def calculate_candidate_activity(
+    old_snapshot,
+    fresh_stats
+):
+
+    new_snapshot = (
+        make_candidate_stats_snapshot(
+            fresh_stats
+        )
+    )
+
+
+    delta_xg = stat_delta(
+        old_snapshot.get(
+            "xg"
+        ),
+        new_snapshot.get(
+            "xg"
+        )
+    )
+
+    delta_shots = stat_delta(
+        old_snapshot.get(
+            "shots"
+        ),
+        new_snapshot.get(
+            "shots"
+        )
+    )
+
+    delta_sot = stat_delta(
+        old_snapshot.get(
+            "sot"
+        ),
+        new_snapshot.get(
+            "sot"
+        )
+    )
+
+    delta_big = stat_delta(
+        old_snapshot.get(
+            "big"
+        ),
+        new_snapshot.get(
+            "big"
+        )
+    )
+
+    delta_corners = stat_delta(
+        old_snapshot.get(
+            "corners"
+        ),
+        new_snapshot.get(
+            "corners"
+        )
+    )
+
+
+    activity_score = 0
+
+
+    # +0.10 xG tek basina anlamli hareket
+    if delta_xg >= 0.10:
+        activity_score += 2
+
+
+    # Tek normal sut zayif kanit.
+    # Iki yeni sut daha guclu kanit.
+    if delta_shots >= 2:
+        activity_score += 2
+
+    elif delta_shots >= 1:
+        activity_score += 1
+
+
+    # Bir isabetli sut tek basina yeterince guclu.
+    if delta_sot >= 1:
+        activity_score += 2
+
+
+    # Buyuk sans cok guclu hareket.
+    if delta_big >= 1:
+        activity_score += 3
+
+
+    # Korner destekleyici hareket.
+    if delta_corners >= 2:
+        activity_score += 2
+
+    elif delta_corners >= 1:
+        activity_score += 1
+
+
+    # En az 2 puan istiyoruz.
+    #
+    # Ornek:
+    # +1 isabetli = yeterli
+    # +0.10 xG = yeterli
+    # +1 buyuk sans = yeterli
+    # +2 sut = yeterli
+    # +1 sut +1 korner = yeterli
+    # sadece +1 normal sut = yetersiz
+
+    meaningful = (
+        activity_score >= 2
+    )
+
+
+    details = {
+        "xg":
+            round(
+                delta_xg,
+                2
+            ),
+
+        "shots":
+            int(
+                delta_shots
+            ),
+
+        "sot":
+            int(
+                delta_sot
+            ),
+
+        "big":
+            int(
+                delta_big
+            ),
+
+        "corners":
+            int(
+                delta_corners
+            ),
+
+        "score":
+            activity_score
+    }
+
+
+    return (
+        meaningful,
+        details
+    )
+
+
+# =========================================================
 # ISTATISTIK GECMISI
 # =========================================================
 
@@ -1782,21 +2028,24 @@ def calculate_recent_pressure(
 
     if (
         delta_shots >= 4
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 5
 
 
     if (
         delta_xg >= 0.35
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 5
 
 
     if (
         delta_big >= 1
-        and delta_sot >= 2
+        and
+        delta_sot >= 2
     ):
         pressure += 4
 
@@ -2377,8 +2626,11 @@ log(
     SIGNAL_THRESHOLD,
     "| TEMPO:",
     TEMPO_MIN_SCORE,
-    "| DOGRULAMA:",
-    SIGNAL_CONFIRM_SECONDS,
+    "| 68-74 BEKLEME:",
+    NORMAL_CONFIRM_SECONDS,
+    "SN",
+    "| 75+ BEKLEME:",
+    STRONG_CONFIRM_SECONDS,
     "SN"
 )
 
@@ -2676,7 +2928,24 @@ while True:
             )
 
 
+            # =================================================
+            # YENI ADAY
+            # =========================================================
+
             if pending is None:
+
+                if goal_score >= 75:
+
+                    confirm_seconds = (
+                        STRONG_CONFIRM_SECONDS
+                    )
+
+                else:
+
+                    confirm_seconds = (
+                        NORMAL_CONFIRM_SECONDS
+                    )
+
 
                 pending_signals[
                     match_id
@@ -2694,7 +2963,17 @@ while True:
                         goal_score,
 
                     "tempo_score":
-                        tempo["score"]
+                        tempo["score"],
+
+                    "confirm_seconds":
+                        confirm_seconds,
+
+                    # Aday olustugu andaki toplam
+                    # istatistikleri sakla.
+                    "stats_snapshot":
+                        make_candidate_stats_snapshot(
+                            stats
+                        )
                 }
 
 
@@ -2709,6 +2988,9 @@ while True:
                     goal_score,
                     "| TEMPO",
                     tempo["score"],
+                    "| BEKLEME",
+                    confirm_seconds,
+                    "SN",
                     "| SKOR",
                     f"{current_score[0]}-{current_score[1]}"
                 )
@@ -2720,6 +3002,10 @@ while True:
                 "score"
             ]
 
+
+            # =================================================
+            # BEKLERKEN SKOR DEGISTI
+            # =========================================================
 
             if current_score != pending_score:
 
@@ -2772,6 +3058,10 @@ while True:
                 continue
 
 
+            # =================================================
+            # ADAYIN KENDI BEKLEME SURESI
+            # =========================================================
+
             elapsed_candidate = (
                 time.time()
                 -
@@ -2779,13 +3069,23 @@ while True:
             )
 
 
+            confirm_seconds = pending.get(
+                "confirm_seconds",
+                STRONG_CONFIRM_SECONDS
+            )
+
+
             if (
                 elapsed_candidate
                 <
-                SIGNAL_CONFIRM_SECONDS
+                confirm_seconds
             ):
                 continue
 
+
+            # =================================================
+            # SON SKOR KONTROLU
+            # =========================================================
 
             fresh = get_fresh_match_state(
                 match_id
@@ -2831,7 +3131,9 @@ while True:
             if fresh_total > pending_total:
 
                 log(
-                    "ADAY IPTAL: 60 SN BEKLERKEN GOL",
+                    "ADAY IPTAL:",
+                    confirm_seconds,
+                    "SN BEKLERKEN GOL",
                     match["home"],
                     "-",
                     match["away"]
@@ -2900,8 +3202,71 @@ while True:
                 continue
 
 
+            # =================================================
+            # SON ISTATISTIK KONTROLU
+            # =========================================================
+
             fresh_stats = get_stats(
                 match_id
+            )
+
+
+            # =================================================
+            # YENI: ADAYDAN SONRA HUCUM DEVAM ETTI MI?
+            # =========================================================
+
+            activity_ok, activity_details = (
+                calculate_candidate_activity(
+                    pending[
+                        "stats_snapshot"
+                    ],
+                    fresh_stats
+                )
+            )
+
+
+            if not activity_ok:
+
+                log(
+                    "ADAY IPTAL: YENI HUCUM YOK",
+                    match["home"],
+                    "-",
+                    match["away"],
+                    "| xG +",
+                    activity_details["xg"],
+                    "| SUT +",
+                    activity_details["shots"],
+                    "| ISABETLI +",
+                    activity_details["sot"],
+                    "| BUYUK +",
+                    activity_details["big"],
+                    "| KORNER +",
+                    activity_details["corners"]
+                )
+
+                pending_signals.pop(
+                    match_id,
+                    None
+                )
+
+                continue
+
+
+            log(
+                "YENI HUCUM DOGRULANDI:",
+                match["home"],
+                "-",
+                match["away"],
+                "| xG +",
+                activity_details["xg"],
+                "| SUT +",
+                activity_details["shots"],
+                "| ISABETLI +",
+                activity_details["sot"],
+                "| BUYUK +",
+                activity_details["big"],
+                "| KORNER +",
+                activity_details["corners"]
             )
 
 
@@ -2917,6 +3282,10 @@ while True:
                 fresh["away_score"]
             )
 
+
+            # =================================================
+            # SON BASKI + TEMPO
+            # =========================================================
 
             final_recent_pressure, _ = (
                 calculate_recent_pressure(
@@ -2952,6 +3321,10 @@ while True:
                 continue
 
 
+            # =================================================
+            # SON GOL PUANI
+            # =========================================================
+
             final_goal_score = (
                 calculate_goal_score(
                     match,
@@ -2967,6 +3340,14 @@ while True:
                 SIGNAL_THRESHOLD
             ):
 
+                log(
+                    "ADAY IPTAL: SON PUAN",
+                    final_goal_score,
+                    match["home"],
+                    "-",
+                    match["away"]
+                )
+
                 pending_signals.pop(
                     match_id,
                     None
@@ -2974,6 +3355,10 @@ while True:
 
                 continue
 
+
+            # =================================================
+            # TELEGRAM
+            # =========================================================
 
             message = make_signal_message(
                 match,
@@ -3016,7 +3401,10 @@ while True:
                     "| DK",
                     match["minute"],
                     "| PUAN",
-                    final_goal_score
+                    final_goal_score,
+                    "| BEKLEME",
+                    confirm_seconds,
+                    "SN"
                 )
 
 
@@ -3025,6 +3413,10 @@ while True:
                 None
             )
 
+
+        # =================================================
+        # BITEN MACLARI TEMIZLE
+        # =========================================================
 
         for old_id in list(
             match_history.keys()
